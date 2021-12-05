@@ -6,4 +6,3 @@ cd zeromq-4.1.8
 ./configure
 make && make install # 编译后生成的库文件 在目录 /usr/local/lib 下，将其移动到 /usr/lib64 目录
 ```
-

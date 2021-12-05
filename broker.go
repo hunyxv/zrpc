@@ -81,6 +81,8 @@ type Broker interface {
 //  4. 当当前节点忙时，向空闲节点转发 task
 //  5. 接收其他节点的回复/响应，然后交给 broker，发送给客户端
 
+var _ Broker = (*broker)(nil)
+
 type broker struct {
 	*peerNodeManager
 
