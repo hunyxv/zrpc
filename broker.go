@@ -14,6 +14,7 @@ import (
 
 /*
 	endpoint 可以是 scheme://[ip]:port，也可以是 scheme://[demain]:port
+
 */
 
 const (
