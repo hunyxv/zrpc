@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"reflect"
 
@@ -20,22 +21,24 @@ var (
 
 	errType = reflect.TypeOf(new(error)).Elem()
 	ctxType = reflect.TypeOf(new(context.Context)).Elem()
+	readType = reflect.TypeOf(new(io.Reader)).Elem()
+	writeType = reflect.TypeOf(new(io.Writer)).Elem()
+	rwCloser = reflect.TypeOf(new(io.ReadWriteCloser)).Elem()
 )
 
-type MethodFunc struct {
-	Method reflect.Value   // function
-	Params []reflect.Value // params
-}
 
-func (f MethodFunc) Call() (ret []interface{}) {
-	for _, item := range f.Method.Call(f.Params) {
-		ret = append(ret, item.Interface())
-	}
-	return
-}
+type ModeType int
+
+const (
+	ReqRep ModeType = iota
+	StreamReqRep
+	ReqStreamRep
+	Stream
+)
 
 type Method struct {
 	methodName  string
+	t           ModeType
 	method      reflect.Value
 	paramTypes  []reflect.Type
 	resultTypes []reflect.Type
@@ -115,7 +118,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 
 // GenerateExecFunc 查找并返回可执行函数
 // 	name: /{servername}/methodname
-func (rpc *RPCInstance) GenerateExecFunc(pctx context.Context, name string, params []msgpack.RawMessage) (*MethodFunc, error) {
+func (rpc *RPCInstance) GenerateExecFunc(pctx context.Context, name string, params []msgpack.RawMessage) (IMethodFunc, error) {
 	if len(params) == 0 {
 		return nil, ErrTooFewParam
 	}
@@ -147,7 +150,7 @@ func (rpc *RPCInstance) GenerateExecFunc(pctx context.Context, name string, para
 		paramsValue[i] = fieldValue
 	}
 
-	return &MethodFunc{
+	return &ReqRepFunc{
 		Method: method.method,
 		Params: paramsValue,
 	}, nil

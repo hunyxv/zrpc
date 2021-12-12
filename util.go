@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"time"
 
 	"github.com/pborman/uuid"
@@ -51,4 +52,69 @@ func unwrap(msg []string) *messageFlow {
 		source: msg[1 : l-1],
 		strpkg: msg[l-1],
 	}
+}
+
+type rwchannel struct {
+	ch        chan []byte
+	buf       []byte
+	blockSize int
+}
+
+func NewRWChannel(size int) io.ReadWriteCloser {
+	if size == 0 {
+		size = 4096
+	}
+	return &rwchannel{
+		ch:        make(chan []byte),
+		blockSize: size,
+	}
+}
+
+func (rw *rwchannel) Read(b []byte) (n int, err error) {
+	if len(rw.buf) > 0 {
+		if len(b) <= len(rw.buf) {
+			n = copy(b, rw.buf)
+			rw.buf = rw.buf[n:]
+			return
+		}
+
+		n = copy(b, rw.buf)
+		rw.buf = rw.buf[:0]
+	}
+
+	for {
+		data, ok := <-rw.ch
+		if !ok {
+			return n, io.EOF
+		}
+		c := copy(b[n:], data)
+		n += c
+		if c < len(data) {
+			rw.buf = data[c:]
+			return
+		}
+	}
+}
+
+func (rw *rwchannel) Write(b []byte) (n int, err error) {
+	if len(b) <= rw.blockSize {
+		rw.ch <- b
+		return len(b), nil
+	}
+
+	for {
+		tmp := make([]byte, rw.blockSize)
+		c := copy(tmp, b)
+		b = b[c:]
+		rw.ch <- tmp[:c]
+		n += c
+		if c < rw.blockSize {
+			return
+		}
+	}
+}
+
+func (rw *rwchannel) Close() error {
+	close(rw.ch)
+	return nil
 }

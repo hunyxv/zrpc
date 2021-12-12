@@ -19,11 +19,11 @@ const (
 type command string
 
 const (
-	close       = command("close")       // 关闭所有连接
-	connect     = command("connect")     // 新连接
-	disconnect  = command("disconnect")  // 断开到某个断点的连接
-	subscribe   = command("subscribe")   // 订阅某topic
-	unsubscribe = command("unsubscribe") // 取消订阅
+	_CLOSE       = command("close")       // 关闭所有连接
+	_CONNECT     = command("connect")     // 新连接
+	_DISCONNECT  = command("disconnect")  // 断开到某个断点的连接
+	_SUBSCRIBE   = command("subscribe")   // 订阅某topic
+	_UNSUBSCRIBE = command("unsubscribe") // 取消订阅
 )
 
 type socket struct {
@@ -130,7 +130,7 @@ func (s *socket) mainLoop() {
 					return
 				}
 				switch command(cmd[0]) {
-				case close: // 关闭
+				case _CLOSE: // 关闭
 					if s.mode == backend || s.soctype == zmq.SUB {
 						for endpoint := range s.endpoints {
 							s.socket.Disconnect(endpoint)
@@ -139,7 +139,7 @@ func (s *socket) mainLoop() {
 					pipe.SendMessage("ok")
 					s.socket.Close()
 					return
-				case disconnect: // 断开到某个端点的连接
+				case _DISCONNECT: // 断开到某个端点的连接
 					if s.mode == backend || s.soctype == zmq.SUB {
 						endpoint := cmd[1]
 						if err := s.socket.Disconnect(endpoint); err != nil {
@@ -147,7 +147,7 @@ func (s *socket) mainLoop() {
 						}
 					}
 					pipe.SendMessage("ok")
-				case connect: // 建立到某个断点的连接
+				case _CONNECT: // 建立到某个断点的连接
 					if s.mode == backend || s.soctype == zmq.SUB {
 						endpoint := cmd[1]
 						err := s.socket.Connect(endpoint)
@@ -156,7 +156,7 @@ func (s *socket) mainLoop() {
 						}
 						pipe.SendMessage("ok")
 					}
-				case subscribe: // 订阅消息
+				case _SUBSCRIBE: // 订阅消息
 					if s.soctype == zmq.SUB {
 						topic := cmd[1]
 						err := s.socket.SetSubscribe(topic)
@@ -165,7 +165,7 @@ func (s *socket) mainLoop() {
 						}
 						pipe.SendMessage("ok")
 					}
-				case unsubscribe: // 取消订阅
+				case _UNSUBSCRIBE: // 取消订阅
 					if s.soctype == zmq.SUB {
 						topic := cmd[1]
 						err := s.socket.SetUnsubscribe(topic)
@@ -227,7 +227,7 @@ func (s *socket) sendLoop() {
 			array := strings.Split(str, " ")
 			cmd := array[0]
 			switch command(cmd) {
-			case close:
+			case _CLOSE:
 				_, err := pipe.SendMessage(cmd)
 				if err != nil {
 					s.errChan <- err
@@ -268,7 +268,7 @@ func (s *socket) Connect(endpoint string) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	s.endpoints[endpoint] = struct{}{}
-	s.commandChan <- fmt.Sprintf("%s %s", connect, endpoint)
+	s.commandChan <- fmt.Sprintf("%s %s", _CONNECT, endpoint)
 }
 
 // 断开到端点 endpoint 的连接（仅后端）
@@ -281,7 +281,7 @@ func (s *socket) Disconnect(endpoint string) {
 
 	if _, ok := s.endpoints[endpoint]; ok {
 		delete(s.endpoints, endpoint)
-		s.commandChan <- fmt.Sprintf("%s %s", disconnect, endpoint)
+		s.commandChan <- fmt.Sprintf("%s %s", _DISCONNECT, endpoint)
 	}
 }
 
@@ -290,7 +290,7 @@ func (s *socket) Subscribe(topic string) {
 	if s.mode != frontend && s.soctype != zmq.SUB {
 		return
 	}
-	s.commandChan <- fmt.Sprintf("%s %s", subscribe, topic)
+	s.commandChan <- fmt.Sprintf("%s %s", _SUBSCRIBE, topic)
 }
 
 // 取消订阅
@@ -298,7 +298,7 @@ func (s *socket) Unsubscribe(topic string) {
 	if s.mode != frontend && s.soctype != zmq.SUB {
 		return
 	}
-	s.commandChan <- fmt.Sprintf("%s %s", unsubscribe, topic)
+	s.commandChan <- fmt.Sprintf("%s %s", _UNSUBSCRIBE, topic)
 }
 
 // 关闭 socket
@@ -308,5 +308,5 @@ func (s *socket) Close() {
 	if s.isClose {
 		return
 	}
-	s.commandChan <- string(close)
+	s.commandChan <- string(_CLOSE)
 }

@@ -7,8 +7,9 @@ import (
 )
 
 const (
-	PACKPATH = "__pack_path__" // pack 在集群中传播路径
-	TTL      = "__ttl__"       // pack 在集群中传播跳数
+	PACKPATH  = "__pack_path__"  // pack 在集群中传播路径
+	TTL       = "__ttl__"        // pack 在集群中传播跳数
+	BLOCKSIZE = "__block_size__" // stream 请求中块大小
 )
 
 type Header map[string][]string
