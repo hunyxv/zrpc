@@ -7,8 +7,6 @@ import (
 	"io"
 	"path"
 	"reflect"
-
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 var (
@@ -19,18 +17,17 @@ var (
 	ErrInvalidParamType  = errors.New("zrpc: the first param must be Context")
 	ErrTooFewParam       = errors.New("zrpc: too few parameters")
 
-	errType = reflect.TypeOf(new(error)).Elem()
-	ctxType = reflect.TypeOf(new(context.Context)).Elem()
-	readType = reflect.TypeOf(new(io.Reader)).Elem()
+	errType   = reflect.TypeOf(new(error)).Elem()
+	ctxType   = reflect.TypeOf(new(context.Context)).Elem()
+	readType  = reflect.TypeOf(new(io.Reader)).Elem()
 	writeType = reflect.TypeOf(new(io.Writer)).Elem()
-	rwCloser = reflect.TypeOf(new(io.ReadWriteCloser)).Elem()
+	rwCloser  = reflect.TypeOf(new(io.ReadWriteCloser)).Elem()
 )
 
-
-type ModeType int
+type FuncMode int
 
 const (
-	ReqRep ModeType = iota
+	ReqRep FuncMode = iota
 	StreamReqRep
 	ReqStreamRep
 	Stream
@@ -38,17 +35,17 @@ const (
 
 type Method struct {
 	methodName  string
-	t           ModeType
+	mode        FuncMode
+	srv         reflect.Value
 	method      reflect.Value
 	paramTypes  []reflect.Type
 	resultTypes []reflect.Type
 }
 
 type Server struct {
-	ServerName  string
-	methods     map[string]Method
-	conventions interface{}
-	instance    interface{}
+	ServerName string
+	methods    map[string]*Method // 方法
+	instance   reflect.Value      // server 实例
 }
 
 type RPCInstance struct {
@@ -58,9 +55,7 @@ type RPCInstance struct {
 // RegisterServer 注册 server
 func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventions interface{}) error {
 	rv := reflect.ValueOf(server)
-	if rv.Kind() == reflect.Ptr {
-		rv = rv.Elem()
-	}
+	// if rv.Kind() != reflect.Ptr {}
 	if rv.IsNil() {
 		return ErrInvalidServer
 	}
@@ -79,29 +74,45 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 	}
 
 	s := &Server{
-		ServerName:  name,
-		methods:     make(map[string]Method),
-		conventions: conventions,
-		instance:    server,
+		ServerName: name,
+		methods:    make(map[string]*Method),
+		// conventions: conventions,
+		instance: rv,
 	}
 	for i := 0; i < rv.NumMethod(); i++ {
-		var method Method
+		var method = new(Method)
 		t_method := t.Method(i)
+		method.srv = s.instance // MethodFunc 的第一个参数
 		method.methodName = t_method.Name
 		method.method = rv.Method(i)
 		methodType := t_method.Type
 		numOfParams := methodType.NumIn()
-		if numOfParams == 0 {
+		if numOfParams <= 1 {
 			return ErrTooFewParam
 		}
 		numOfResult := methodType.NumOut()
-		for j := 0; j < numOfParams; j++ {
+		// 从第一个开始，跳过第0个参数
+		for j := 1; j < numOfParams; j++ {
 			method.paramTypes = append(method.paramTypes, methodType.In(j))
 		}
-		// 判断第一个参数是否是 Context
+		// 判断第1个参数是否是 Context
 		if !method.paramTypes[0].Implements(ctxType) {
 			return ErrInvalidParamType
 		}
+		var mode FuncMode = ReqRep
+
+		// 参数大于1
+		if numOfParams > 1 {
+			// 最后一个参数实现了 io.Reader
+			if method.paramTypes[numOfParams-1].Implements(readType) {
+				mode |= StreamReqRep
+			}
+			// 最后一个参数实现了 io.Writer
+			if method.paramTypes[numOfParams-1].Implements(writeType) {
+				mode |= ReqStreamRep
+			}
+		}
+		method.mode = mode
 		for j := 0; j < numOfResult; j++ {
 			method.resultTypes = append(method.resultTypes, methodType.Out(j))
 		}
@@ -118,10 +129,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 
 // GenerateExecFunc 查找并返回可执行函数
 // 	name: /{servername}/methodname
-func (rpc *RPCInstance) GenerateExecFunc(pctx context.Context, name string, params []msgpack.RawMessage) (IMethodFunc, error) {
-	if len(params) == 0 {
-		return nil, ErrTooFewParam
-	}
+func (rpc *RPCInstance) GenerateExecFunc(pctx context.Context, name string) (IMethodFunc, error) {
 	serverName, methodName := path.Split(name)
 	server, ok := rpc.servers[serverName]
 	if !ok {
@@ -133,25 +141,22 @@ func (rpc *RPCInstance) GenerateExecFunc(pctx context.Context, name string, para
 	}
 
 	// 反序列化参数
-	paramsValue := make([]reflect.Value, len(params))
-	var ctx *Context
-	err := msgpack.Unmarshal(params[0], &ctx)
-	if err != nil {
-		return nil, fmt.Errorf("zrpc: %s", err.Error())
-	}
-	paramsValue[0] = reflect.ValueOf(ctx)
-	for i := 1; i < len(params); i++ {
-		fieldType := method.paramTypes[i]
-		fieldValue := reflect.New(fieldType)
-		err := msgpack.Unmarshal(params[i], fieldValue.Interface())
-		if err != nil {
-			return nil, err
-		}
-		paramsValue[i] = fieldValue
-	}
+	// paramsValue := make([]reflect.Value, len(params))
+	// var ctx *Context
+	// err := msgpack.Unmarshal(params[0], &ctx)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("zrpc: %s", err.Error())
+	// }
+	// paramsValue[0] = reflect.ValueOf(ctx)
+	// for i := 1; i < len(params); i++ {
+	// 	fieldType := method.paramTypes[i]
+	// 	fieldValue := reflect.New(fieldType)
+	// 	err := msgpack.Unmarshal(params[i], fieldValue.Interface())
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+	// 	paramsValue[i] = fieldValue
+	// }
 
-	return &ReqRepFunc{
-		Method: method.method,
-		Params: paramsValue,
-	}, nil
+	return NewMethodFunc(method)
 }
