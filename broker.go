@@ -217,8 +217,6 @@ func (b *broker) Run() {
 			// pack.Header.Add(PACKPATH, msgfrom)
 			b.taskChan <- pack // 跳数超没超过限制上层来决定
 		case raws := <-b.clusterbe.Recv(): // 开始接收后端数据(返回的结果)
-			msgfrom := string(raws[0])
-			logger.Info("--> ", msgfrom)
 			var pack *Pack
 			msgpack.Unmarshal(raws[1], &pack)
 			lastNode := pack.Header.Pop(PACKPATH)

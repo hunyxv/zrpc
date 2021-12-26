@@ -52,6 +52,12 @@ type RPCInstance struct {
 	servers map[string]*Server // server name : server
 }
 
+func newRPCInstance ()*RPCInstance {
+	return &RPCInstance{
+		servers: make(map[string]*Server),
+	}
+}
+
 // RegisterServer 注册 server
 func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventions interface{}) error {
 	rv := reflect.ValueOf(server)
@@ -104,11 +110,11 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 		// 参数大于1
 		if numOfParams > 1 {
 			// 最后一个参数实现了 io.Reader
-			if method.paramTypes[numOfParams-1].Implements(readType) {
+			if method.paramTypes[numOfParams-2].Implements(readType) {
 				mode |= StreamReqRep
 			}
 			// 最后一个参数实现了 io.Writer
-			if method.paramTypes[numOfParams-1].Implements(writeType) {
+			if method.paramTypes[numOfParams-2].Implements(writeType) {
 				mode |= ReqStreamRep
 			}
 		}
@@ -139,24 +145,6 @@ func (rpc *RPCInstance) GenerateExecFunc(pctx context.Context, name string) (IMe
 	if !ok {
 		return nil, fmt.Errorf("no %s method", methodName)
 	}
-
-	// 反序列化参数
-	// paramsValue := make([]reflect.Value, len(params))
-	// var ctx *Context
-	// err := msgpack.Unmarshal(params[0], &ctx)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("zrpc: %s", err.Error())
-	// }
-	// paramsValue[0] = reflect.ValueOf(ctx)
-	// for i := 1; i < len(params); i++ {
-	// 	fieldType := method.paramTypes[i]
-	// 	fieldValue := reflect.New(fieldType)
-	// 	err := msgpack.Unmarshal(params[i], fieldValue.Interface())
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	paramsValue[i] = fieldValue
-	// }
 
 	return NewMethodFunc(method)
 }

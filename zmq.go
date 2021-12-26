@@ -2,6 +2,7 @@ package zrpc
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -80,6 +81,12 @@ func newSocket(id string, t zmq.Type, mode socMode, endpoint string) (*socket, e
 	}
 	go s.mainLoop()
 	go s.sendLoop()
+	go func() {
+		for {
+			err := <-s.errChan
+			log.Println("zmq err: ", s.endpoint, err)
+		}
+	}()
 
 	return s, nil
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"io"
+	"os"
+	"path"
 	"time"
 
 	"github.com/pborman/uuid"
@@ -117,4 +119,11 @@ func (rw *rwchannel) Write(b []byte) (n int, err error) {
 func (rw *rwchannel) Close() error {
 	close(rw.ch)
 	return nil
+}
+
+
+func getServerName() string {
+	pwd, _ := os.Getwd()
+	_, name := path.Split(pwd)
+	return name
 }

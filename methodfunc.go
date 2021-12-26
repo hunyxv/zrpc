@@ -3,7 +3,9 @@ package zrpc
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"os"
 	"reflect"
 	"syscall"
@@ -17,6 +19,7 @@ type IMethodFunc interface {
 }
 
 type IReply interface {
+	Send(p *Pack) error
 	Reply(p *Pack) error
 }
 
@@ -37,54 +40,50 @@ func NewMethodFunc(method *Method) (IMethodFunc, error) {
 var _ IMethodFunc = (*ReqRepFunc)(nil)
 
 type ReqRepFunc struct {
-	id     string
-	pack   Pack
+	id string
+	// header Header
 	Method *Method // function
 	reply  IReply
 }
 
 func NewReqRepFunc(m *Method) (IMethodFunc, error) {
-	// 反序列化参数
-	// paramsValue := make([]reflect.Value, len(p.Args))
-	// var ctx *Context
-	// err := msgpack.Unmarshal(p.Args[0], &ctx)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("zrpc: %s", err.Error())
-	// }
-	// paramsValue[0] = reflect.ValueOf(ctx)
-	// for i := 1; i < len(p.Args); i++ {
-	// 	fieldType := m.paramTypes[i]
-	// 	fieldValue := reflect.New(fieldType)
-	// 	err := msgpack.Unmarshal(p.Args[i], fieldValue.Interface())
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	paramsValue[i] = fieldValue
-	// }
-
 	return &ReqRepFunc{
-		//id:     p.Identity,
 		Method: m,
-
-		//reply:  r,
 	}, nil
+}
+
+func (f *ReqRepFunc) sendErr(e error) {
+	rawerr, _ := msgpack.Marshal(e)
+	pack := &Pack{
+		Identity:   f.id,
+		MethodName: ERROR,
+		Args:       []msgpack.RawMessage{[]byte(""), rawerr},
+	}
+
+	f.reply.Reply(pack)
 }
 
 // Call 将 func 放入 pool 中运行
 func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	if len(p.Args) != len(f.Method.paramTypes) {
-		//  TODO 异常处理
+		f.sendErr(fmt.Errorf("not enough arguments in call to %s", f.Method.methodName))
+		return
 	}
 
+	f.reply = r
+	f.id = p.Identity
 	// 反序列化参数
-	paramsValue := make([]reflect.Value, len(p.Args)+1)
-	paramsValue[0] = f.Method.srv
+	paramsValue := make([]reflect.Value, len(p.Args))
+	// paramsValue[0] = f.Method.srv ??
 	var ctx *Context
 	err := msgpack.Unmarshal(p.Args[0], &ctx)
 	if err != nil {
 		// TODO 异常处理
+		log.Println("err: ", err)
+		f.sendErr(err)
+		return
 	}
-	paramsValue[1] = reflect.ValueOf(ctx)
+	paramsValue[0] = reflect.ValueOf(ctx)
 
 	for i := 1; i < len(f.Method.paramTypes); i++ {
 		fieldType := f.Method.paramTypes[i]
@@ -104,7 +103,7 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	}
 
 	resp := &Pack{
-		Identity:   f.id,
+		Identity:   p.Identity,
 		MethodName: REPLY,
 		Args:       rets,
 	}
