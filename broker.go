@@ -25,6 +25,7 @@ const (
 	DISCONNECT                          // 通知让客户端断开连接
 	ERROR                               // 异常包
 	STREAM                              // stream
+	STREAM_END
 )
 
 var (

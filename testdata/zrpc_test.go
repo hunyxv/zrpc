@@ -1,7 +1,11 @@
 package testdata
 
 import (
+	"bufio"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -15,19 +19,41 @@ import (
 
 type ISayHello interface {
 	Hello(ctx context.Context) (string, error)
+	StreamReqFunc(ctx context.Context, reader io.Reader) (string, error)
 }
+
+var _ ISayHello = (*SayHello)(nil)
 
 type SayHello struct{}
 
 func (s SayHello) Hello(ctx context.Context) (string, error) {
 	log.Println("Hello world!")
-	return "world", nil
+	return "world", errors.New("a error")
+}
+
+func (s SayHello) StreamReqFunc(ctx context.Context, reader io.Reader) (string, error) {
+	log.Println("stream req func...")
+	buf := bufio.NewReader(reader)
+	for {
+		line, _, err := buf.ReadLine()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return "error", err
+		}
+		log.Println("line: ", string(line))
+	}
+	return "stream request", nil
 }
 
 func TestRunserver(t *testing.T) {
 	var i *ISayHello
 	server := zrpc.NewSvcMultiplexer(zrpc.DefaultNodeState)
-	zrpc.RegisterServer("sayhello/", &SayHello{}, i)
+	err := zrpc.RegisterServer("sayhello/", &SayHello{}, i)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	server.Run(context.TODO())
 	ch := make(chan os.Signal, 1)
@@ -36,18 +62,7 @@ func TestRunserver(t *testing.T) {
 	server.Close()
 }
 
-func client(pack *zrpc.Pack) [][]byte {
-	soc, err := zmq.NewSocket(zmq.DEALER)
-	if err != nil {
-		panic(err)
-	}
-	soc.SetIdentity(pack.Identity)
-	err = soc.Connect("tcp://127.0.0.1:8080")
-	if err != nil {
-		panic(err)
-	}
-	defer soc.Close()
-	defer soc.Disconnect("tcp://127.0.0.1:8080")
+func client(soc *zmq.Socket, pack *zrpc.Pack) [][]byte {
 
 	rawPack, err := msgpack.Marshal(&pack)
 	if err != nil {
@@ -69,6 +84,19 @@ func client(pack *zrpc.Pack) [][]byte {
 }
 
 func TestRunclient(t *testing.T) {
+	id := "test-client"
+	soc, err := zmq.NewSocket(zmq.DEALER)
+	if err != nil {
+		panic(err)
+	}
+	soc.SetIdentity(id)
+	err = soc.Connect("tcp://127.0.0.1:8080")
+	if err != nil {
+		panic(err)
+	}
+	defer soc.Close()
+	defer soc.Disconnect("tcp://127.0.0.1:8080")
+
 	ctx := &zrpc.Context{
 		Context: context.Background(),
 	}
@@ -78,12 +106,12 @@ func TestRunclient(t *testing.T) {
 	}
 
 	pack := &zrpc.Pack{
-		Identity:   "test-client",
+		Identity:   id,
 		Header:     make(zrpc.Header),
 		MethodName: "sayhello/Hello",
 		Args:       []msgpack.RawMessage{rawCtx},
 	}
-	r := client(pack)
+	r := client(soc, pack)
 
 	var result zrpc.Pack
 
@@ -95,7 +123,78 @@ func TestRunclient(t *testing.T) {
 
 	var world string
 	msgpack.Unmarshal(result.Args[0], &world)
-	var e error
-	msgpack.Unmarshal(result.Args[1], e)
-	t.Log("result: ", world, e)
+	var e string
+	msgpack.Unmarshal(result.Args[1], &e)
+	t.Log("result: ", world, errors.New(e))
+}
+
+func TestStreamReqFunc(t *testing.T) {
+	id := "test-client"
+	soc, err := zmq.NewSocket(zmq.DEALER)
+	if err != nil {
+		panic(err)
+	}
+	soc.SetIdentity(id)
+	err = soc.Connect("tcp://127.0.0.1:8080")
+	if err != nil {
+		panic(err)
+	}
+	defer soc.Close()
+	defer soc.Disconnect("tcp://127.0.0.1:8080")
+
+	ctx := &zrpc.Context{
+		Context: context.Background(),
+	}
+	rawCtx, err := msgpack.Marshal(ctx)
+	if err != nil {
+		panic(err)
+	}
+
+	rawline, _ := msgpack.Marshal([]byte(fmt.Sprintf("hello %d\n", 0)))
+	pack := &zrpc.Pack{
+		Identity:   id,
+		Header:     make(zrpc.Header),
+		MethodName: "sayhello/StreamReqFunc",
+		Args:       []msgpack.RawMessage{rawCtx, rawline},
+	}
+	for i := 0; i < 10; i++ {
+		rawPack, err := msgpack.Marshal(&pack)
+		if err != nil {
+			panic(err)
+		}
+		t.Log(rawline)
+		total, err := soc.SendMessage(rawPack)
+		if err != nil {
+			panic(err)
+		}
+		log.Println("total: ", total)
+		rawline, _ = msgpack.Marshal([]byte(fmt.Sprintf("hello %d\n", 0)))
+		pack = &zrpc.Pack{
+			Identity:   id,
+			Header:     make(zrpc.Header),
+			MethodName: "sayhello/StreamReqFunc",
+			Args:       []msgpack.RawMessage{rawline},
+		}
+	}
+
+	// end
+	pack = &zrpc.Pack{
+		Identity:   id,
+		MethodName: zrpc.STREAM_END,
+	}
+	rawPack, err := msgpack.Marshal(&pack)
+	if err != nil {
+		panic(err)
+	}
+	total, err := soc.SendMessage(rawPack)
+	if err != nil {
+		panic(err)
+	}
+	log.Println("end total: ", total)
+
+	msg, err := soc.RecvMessageBytes(0)
+	if err != nil {
+		panic(err)
+	}
+	log.Println("msg: ", msg, string(msg[0]))
 }

@@ -2,13 +2,10 @@ package zrpc
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"reflect"
-	"syscall"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -16,6 +13,7 @@ import (
 type IMethodFunc interface {
 	Call(p *Pack, r IReply)
 	Next(params []msgpack.RawMessage)
+	End()
 }
 
 type IReply interface {
@@ -26,52 +24,54 @@ type IReply interface {
 func NewMethodFunc(method *Method) (IMethodFunc, error) {
 	switch method.mode {
 	case ReqRep:
-		return NewReqRepFunc(method)
+		return NewReqRepFunc(method), nil
 	case StreamReqRep:
-		return NewStreamReqRepFunc(method)
+		return NewStreamReqRepFunc(method), nil
 	case ReqStreamRep:
-		return NewReqStreamRepFunc(method)
+		return NewReqStreamRepFunc(method), nil
 	case Stream:
-		return NewStreamFunc(method)
+		return NewStreamFunc(method), nil
 	}
-	return nil, errors.New("xxx")
+	return nil, fmt.Errorf("unknown function type: %+v", method.mode)
 }
 
 var _ IMethodFunc = (*ReqRepFunc)(nil)
 
+// ReqRepFunc 请求应答类型函数
 type ReqRepFunc struct {
-	id string
-	// header Header
+	id     string
 	Method *Method // function
 	reply  IReply
 }
 
-func NewReqRepFunc(m *Method) (IMethodFunc, error) {
+func NewReqRepFunc(m *Method) IMethodFunc {
 	return &ReqRepFunc{
 		Method: m,
-	}, nil
+	}
 }
 
 func (f *ReqRepFunc) sendErr(e error) {
-	rawerr, _ := msgpack.Marshal(e)
 	pack := &Pack{
 		Identity:   f.id,
 		MethodName: ERROR,
-		Args:       []msgpack.RawMessage{[]byte(""), rawerr},
+		Args:       make([]msgpack.RawMessage, len(f.Method.resultTypes)),
 	}
 
+	rawerr, _ := msgpack.Marshal(e.Error())
+	pack.Args[len(pack.Args)-1] = rawerr
 	f.reply.Reply(pack)
 }
 
 // Call 将 func 放入 pool 中运行
 func (f *ReqRepFunc) Call(p *Pack, r IReply) {
+	f.reply = r
+	f.id = p.Identity
+
 	if len(p.Args) != len(f.Method.paramTypes) {
 		f.sendErr(fmt.Errorf("not enough arguments in call to %s", f.Method.methodName))
 		return
 	}
 
-	f.reply = r
-	f.id = p.Identity
 	// 反序列化参数
 	paramsValue := make([]reflect.Value, len(p.Args))
 	// paramsValue[0] = f.Method.srv ??
@@ -93,12 +93,24 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 			// TODO 异常处理
 			return
 		}
-		paramsValue[i+1] = fieldValue
+		paramsValue[i] = fieldValue
 	}
 
 	var rets []msgpack.RawMessage
-	for _, item := range f.Method.method.Call(paramsValue) {
+	result := f.Method.method.Call(paramsValue)
+
+	for _, item := range result[:len(result)-1] {
 		ret, _ := msgpack.Marshal(item.Interface())
+		rets = append(rets, ret)
+	}
+
+	// 最后一个是error类型
+	errVal := result[len(result)-1]
+	if !errVal.IsNil() {
+		ret, _ := msgpack.Marshal(errVal.Interface().(error).Error())
+		rets = append(rets, ret)
+	} else {
+		ret, _ := msgpack.Marshal(errVal.Interface())
 		rets = append(rets, ret)
 	}
 
@@ -111,37 +123,122 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 }
 
 func (f *ReqRepFunc) Next([]msgpack.RawMessage) {}
+func (f *ReqRepFunc) End()                      {}
 
+// StreamReqRepFunc 流式请求类型函数
 type StreamReqRepFunc struct {
-	Method reflect.Value // function
+	id     string
+	Method *Method // function
 	reply  IReply
-	rw     io.ReadWriteCloser
+	rw     *rwchannel
 	buf    *bufio.ReadWriter
 }
 
-func NewStreamReqRepFunc(m *Method) (IMethodFunc, error) {
-	// blockSize, _ := strconv.Atoi(p.Get(BLOCKSIZE))
-	// // TODO buf 大小
-	// rw := NewRWChannel(blockSize)
-
+func NewStreamReqRepFunc(m *Method) IMethodFunc {
 	return &StreamReqRepFunc{
-		Method: m.method,
-		// rw:     rw,
-		// buf:    bufio.NewReadWriter(bufio.NewReader(rw), bufio.NewWriter(rw)),
-	}, nil
+		Method: m,
+	}
+}
+
+func (srf *StreamReqRepFunc) sendErr(e error) {
+	log.Println("err: ", e.Error())
+	pack := &Pack{
+		Identity:   srf.id,
+		MethodName: ERROR,
+		Args:       make([]msgpack.RawMessage, len(srf.Method.resultTypes)),
+	}
+
+	rawerr, _ := msgpack.Marshal(e.Error())
+	pack.Args[len(pack.Args)-1] = rawerr
+	srf.reply.Reply(pack)
 }
 
 func (srf *StreamReqRepFunc) Call(p *Pack, r IReply) {
-	// TODO 参数：ctx, ..., reader
-	f2, _ := os.OpenFile("test.txt", 0666, syscall.O_WRONLY)
+	srf.id = p.Identity
+	srf.reply = r
 
-	f2.Close()
+	if len(p.Args) != len(srf.Method.paramTypes) {
+		srf.sendErr(fmt.Errorf("not enough arguments in call to %s", srf.Method.methodName))
+		return
+	}
+	// 反序列化参数
+	paramsValue := make([]reflect.Value, len(p.Args))
+	// 第一个参数是 ctx
+	var ctx *Context
+	err := msgpack.Unmarshal(p.Args[0], &ctx)
+	if err != nil {
+		// TODO 异常处理
+		log.Println("err: ", err)
+		srf.sendErr(err)
+		return
+	}
+	paramsValue[0] = reflect.ValueOf(ctx)
 
-	//n, err := f2.Write([]byte("aaaa"))
+	for i := 1; i < len(srf.Method.paramTypes)-1; i++ {
+		fieldType := srf.Method.paramTypes[i]
+		fieldValue := reflect.New(fieldType)
+		err := msgpack.Unmarshal(p.Args[i], fieldValue.Interface())
+		if err != nil {
+			// TODO 异常处理
+			return
+		}
+		paramsValue[i] = fieldValue
+	}
+	// 最后一个是 ReadWriter
+	srf.rw = NewRWChannel(0)
+	srf.buf = bufio.NewReadWriter(bufio.NewReader(srf.rw), bufio.NewWriter(srf.rw))
+	rwvalue := reflect.ValueOf(srf.buf)
+
+	paramsValue[len(srf.Method.paramTypes)-1] = rwvalue
+
+	var rets []msgpack.RawMessage
+	// 调用函数
+	result := srf.Method.method.Call(paramsValue)
+
+	for _, item := range result[:len(result)-1] {
+		ret, _ := msgpack.Marshal(item.Interface())
+		rets = append(rets, ret)
+	}
+
+	// 最后一个是error类型
+	errVal := result[len(result)-1]
+	if !errVal.IsNil() {
+		ret, _ := msgpack.Marshal(errVal.Interface().(error).Error())
+		rets = append(rets, ret)
+	} else {
+		ret, _ := msgpack.Marshal(errVal.Interface())
+		rets = append(rets, ret)
+	}
+
+	resp := &Pack{
+		Identity:   p.Identity,
+		MethodName: REPLY,
+		Args:       rets,
+	}
+	srf.reply.Reply(resp)
 }
 
-func (srf *StreamReqRepFunc) Next([]msgpack.RawMessage) {
-	// TODO
+func (srf *StreamReqRepFunc) Next(data []msgpack.RawMessage) {
+	var tmp string
+	err := msgpack.Unmarshal(data[0], &tmp)   // TODO 这样弄不好，待优化
+	if err != nil {
+		panic(err)
+	}
+	raw := []byte(tmp)
+	var i int
+	for i != len(raw) {
+		n, err := srf.buf.Write(raw[i:])
+		if err != nil && err != io.EOF {
+			srf.sendErr(err)
+			return
+		}
+		i += n
+	}
+	srf.buf.Flush()
+}
+
+func (srf *StreamReqRepFunc) End() {
+	srf.rw.Close()
 }
 
 type ReqStreamRepFunc struct {
@@ -151,23 +248,20 @@ type ReqStreamRepFunc struct {
 	buf    *bufio.ReadWriter
 }
 
-func NewReqStreamRepFunc(m *Method) (IMethodFunc, error) {
+func NewReqStreamRepFunc(m *Method) IMethodFunc {
 	// TODO
-	return nil, nil
+	return nil
 }
 
 func (rsf *ReqStreamRepFunc) Call(p *Pack, r IReply) {
-	// TODO 参数：ctx, ..., reader
-	f2, _ := os.OpenFile("test.txt", 0666, syscall.O_WRONLY)
 
-	f2.Close()
-
-	//n, err := f2.Write([]byte("aaaa"))
 }
 
 func (rsf *ReqStreamRepFunc) Next([]msgpack.RawMessage) {
 	// TODO
 }
+
+func (rsf *ReqStreamRepFunc) End() {}
 
 type StreamFunc struct {
 	Method reflect.Value // function
@@ -176,9 +270,9 @@ type StreamFunc struct {
 	buf    *bufio.ReadWriter
 }
 
-func NewStreamFunc(m *Method) (IMethodFunc, error) {
+func NewStreamFunc(m *Method) IMethodFunc {
 	// TODO
-	return nil, nil
+	return nil
 }
 
 func (sf *StreamFunc) Call(p *Pack, r IReply) {
@@ -188,3 +282,5 @@ func (sf *StreamFunc) Call(p *Pack, r IReply) {
 func (sf *StreamFunc) Next([]msgpack.RawMessage) {
 	// TODO
 }
+
+func (sf *StreamFunc) End() {}

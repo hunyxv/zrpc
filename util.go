@@ -62,12 +62,12 @@ type rwchannel struct {
 	blockSize int
 }
 
-func NewRWChannel(size int) io.ReadWriteCloser {
-	if size == 0 {
+func NewRWChannel(size int) *rwchannel {
+	if size <= 0 {
 		size = 4096
 	}
 	return &rwchannel{
-		ch:        make(chan []byte),
+		ch:        make(chan []byte, 1),
 		blockSize: size,
 	}
 }
@@ -84,18 +84,17 @@ func (rw *rwchannel) Read(b []byte) (n int, err error) {
 		rw.buf = rw.buf[:0]
 	}
 
-	for {
-		data, ok := <-rw.ch
-		if !ok {
-			return n, io.EOF
-		}
-		c := copy(b[n:], data)
-		n += c
-		if c < len(data) {
-			rw.buf = data[c:]
-			return
-		}
+	data, ok := <-rw.ch
+	if !ok {
+		return n, io.EOF
 	}
+	c := copy(b[n:], data)
+	n += c
+	if c < len(data) {
+		rw.buf = data[c:]
+		return
+	}
+	return
 }
 
 func (rw *rwchannel) Write(b []byte) (n int, err error) {
@@ -120,7 +119,6 @@ func (rw *rwchannel) Close() error {
 	close(rw.ch)
 	return nil
 }
-
 
 func getServerName() string {
 	pwd, _ := os.Getwd()

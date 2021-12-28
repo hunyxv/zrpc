@@ -41,15 +41,21 @@ func (m *SvcMultiplexer) Dispatcher(ctx context.Context) {
 	for pack := range m.broker.NewTask() {
 		id := pack.Identity
 		if mf, ok := m.activeChannels[id]; ok {
+			if pack.MethodName == STREAM_END {
+				mf.End()
+				continue
+			}
 			mf.Next(pack.Args)
 		} else {
 			mf, err := m.rpc.GenerateExecFunc(ctx, pack.MethodName)
 			if err != nil {
 				// TODO 发生 error
 				log.Print(err)
+				return
 			}
 			m.activeChannels[id] = mf
-			mf.Call(pack, m)
+			go mf.Call(pack, m)
+			time.Sleep(1 * time.Second) // TODO 保证先出实话 Call 中的数据
 		}
 	}
 }
