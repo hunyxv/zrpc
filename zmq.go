@@ -267,7 +267,7 @@ func (s *socket) Send() chan<- [][]byte {
 	return s.sendChan
 }
 
-// 连接到断电 endpoint （仅后端, zmq.SUB除外）
+// Connect 连接到端点 endpoint （仅后端, zmq.SUB除外）
 func (s *socket) Connect(endpoint string) {
 	if s.mode != backend && s.soctype != zmq.SUB {
 		return
@@ -278,7 +278,7 @@ func (s *socket) Connect(endpoint string) {
 	s.commandChan <- fmt.Sprintf("%s %s", _CONNECT, endpoint)
 }
 
-// 断开到端点 endpoint 的连接（仅后端）
+// Disconnect 断开到端点 endpoint 的连接（仅后端）
 func (s *socket) Disconnect(endpoint string) {
 	if s.mode != backend {
 		return
@@ -292,7 +292,7 @@ func (s *socket) Disconnect(endpoint string) {
 	}
 }
 
-// 订阅消息
+// Subscribe 订阅消息
 func (s *socket) Subscribe(topic string) {
 	if s.mode != frontend && s.soctype != zmq.SUB {
 		return
@@ -300,7 +300,7 @@ func (s *socket) Subscribe(topic string) {
 	s.commandChan <- fmt.Sprintf("%s %s", _SUBSCRIBE, topic)
 }
 
-// 取消订阅
+// Unsubscribe 取消订阅
 func (s *socket) Unsubscribe(topic string) {
 	if s.mode != frontend && s.soctype != zmq.SUB {
 		return
@@ -308,7 +308,7 @@ func (s *socket) Unsubscribe(topic string) {
 	s.commandChan <- fmt.Sprintf("%s %s", _UNSUBSCRIBE, topic)
 }
 
-// 关闭 socket
+// Close 关闭 socket
 func (s *socket) Close() {
 	s.lock.Lock()
 	defer s.lock.Unlock()

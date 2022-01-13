@@ -264,7 +264,7 @@ func newPeerNodeManager(state *NodeState, hbInterval time.Duration) (*peerNodeMa
 		return nil, err
 	}
 
-	clusterbe, err := newSocket(state.NodeID, zmq.ROUTER, backend, "")
+	clusterbe, err := newSocket(state.NodeID, zmq.DEALER, backend, "")
 	if err != nil {
 		clusterbe.Close()
 		return nil, err

@@ -54,8 +54,8 @@ func (m *SvcMultiplexer) Dispatcher(ctx context.Context) {
 				return
 			}
 			m.activeChannels[id] = mf
-			go mf.Call(pack, m)
-			time.Sleep(1 * time.Second) // TODO 保证先出实话 Call 中的数据
+			mf.Call(pack, m)
+			//time.Sleep(1 * time.Second) // TODO 保证先出实话 Call 中的数据
 		}
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/hunyxv/zrpc"
 	zmq "github.com/pebbe/zmq4"
@@ -97,6 +98,7 @@ func TestRunclient(t *testing.T) {
 	defer soc.Close()
 	defer soc.Disconnect("tcp://127.0.0.1:8080")
 
+	now := time.Now()
 	ctx := &zrpc.Context{
 		Context: context.Background(),
 	}
@@ -126,6 +128,7 @@ func TestRunclient(t *testing.T) {
 	var e string
 	msgpack.Unmarshal(result.Args[1], &e)
 	t.Log("result: ", world, errors.New(e))
+	t.Logf("takes %s", time.Since(now))
 }
 
 func TestStreamReqFunc(t *testing.T) {
@@ -142,6 +145,7 @@ func TestStreamReqFunc(t *testing.T) {
 	defer soc.Close()
 	defer soc.Disconnect("tcp://127.0.0.1:8080")
 
+	now := time.Now()
 	ctx := &zrpc.Context{
 		Context: context.Background(),
 	}
@@ -162,13 +166,13 @@ func TestStreamReqFunc(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		t.Log(rawline)
+		t.Log(string(rawline))
 		total, err := soc.SendMessage(rawPack)
 		if err != nil {
 			panic(err)
 		}
 		log.Println("total: ", total)
-		rawline, _ = msgpack.Marshal([]byte(fmt.Sprintf("hello %d\n", 0)))
+		rawline, _ = msgpack.Marshal([]byte(fmt.Sprintf("hello %d\n", i+1)))
 		pack = &zrpc.Pack{
 			Identity:   id,
 			Header:     make(zrpc.Header),
@@ -197,4 +201,5 @@ func TestStreamReqFunc(t *testing.T) {
 		panic(err)
 	}
 	log.Println("msg: ", msg, string(msg[0]))
+	t.Logf("takes %s", time.Since(now))
 }

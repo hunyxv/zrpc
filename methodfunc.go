@@ -191,36 +191,38 @@ func (srf *StreamReqRepFunc) Call(p *Pack, r IReply) {
 
 	paramsValue[len(srf.Method.paramTypes)-1] = rwvalue
 
-	var rets []msgpack.RawMessage
-	// 调用函数
-	result := srf.Method.method.Call(paramsValue)
+	go func() {
+		var rets []msgpack.RawMessage
+		// 调用函数
+		result := srf.Method.method.Call(paramsValue)
 
-	for _, item := range result[:len(result)-1] {
-		ret, _ := msgpack.Marshal(item.Interface())
-		rets = append(rets, ret)
-	}
+		for _, item := range result[:len(result)-1] {
+			ret, _ := msgpack.Marshal(item.Interface())
+			rets = append(rets, ret)
+		}
 
-	// 最后一个是error类型
-	errVal := result[len(result)-1]
-	if !errVal.IsNil() {
-		ret, _ := msgpack.Marshal(errVal.Interface().(error).Error())
-		rets = append(rets, ret)
-	} else {
-		ret, _ := msgpack.Marshal(errVal.Interface())
-		rets = append(rets, ret)
-	}
+		// 最后一个是error类型
+		errVal := result[len(result)-1]
+		if !errVal.IsNil() {
+			ret, _ := msgpack.Marshal(errVal.Interface().(error).Error())
+			rets = append(rets, ret)
+		} else {
+			ret, _ := msgpack.Marshal(errVal.Interface())
+			rets = append(rets, ret)
+		}
 
-	resp := &Pack{
-		Identity:   p.Identity,
-		MethodName: REPLY,
-		Args:       rets,
-	}
-	srf.reply.Reply(resp)
+		resp := &Pack{
+			Identity:   p.Identity,
+			MethodName: REPLY,
+			Args:       rets,
+		}
+		srf.reply.Reply(resp)
+	}()
 }
 
 func (srf *StreamReqRepFunc) Next(data []msgpack.RawMessage) {
 	var tmp string
-	err := msgpack.Unmarshal(data[0], &tmp)   // TODO 这样弄不好，待优化
+	err := msgpack.Unmarshal(data[0], &tmp) // TODO 这样弄不好，待优化
 	if err != nil {
 		panic(err)
 	}
