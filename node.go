@@ -1,7 +1,6 @@
 package zrpc
 
 import (
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -10,11 +9,12 @@ import (
 
 var DefaultNodeState = &NodeState{
 	Node: &Node{
-		ServiceName: getServerName(),
-		NodeID: "",
-		LocalEndpoint: "tcp://127.0.0.1:8080",
-		ClusterEndpoint: "tcp://127.0.0.1:8081",
-		StateEndpoint: "tcp://127.0.0.1:8082",
+		ServiceName:     getServerName(),
+		NodeID:          "",
+		LocalEndpoint:   "tcp://0.0.0.0:8080",
+		ClusterEndpoint: "tcp://0.0.0.0:8081",
+		StateEndpoint:   "tcp://0.0.0.0:8082",
+		IsIdle:          true,
 	},
 }
 
@@ -38,11 +38,11 @@ var _ Metrics = (*Workbench)(nil)
 type NodeState struct {
 	*Node
 
-	metrices       Metrics
-	flag           int32     // 暂停工作
-	clusterIdleCap int       // 集群空闲总容量（不包含本节点）
-	expiration     time.Time // 过期时间，通过心跳来更新
-	lock           sync.RWMutex
+	metrices Metrics
+	flag     int32 // 暂停工作
+	//clusterIdleCap int       // 集群空闲总容量（不包含本节点）
+	expiration time.Time // 过期时间，通过心跳来更新
+	//lock           sync.RWMutex
 }
 
 func (s *NodeState) pause() {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"path"
 	"reflect"
 )
@@ -52,7 +53,7 @@ type RPCInstance struct {
 	servers map[string]*Server // server name : server
 }
 
-func newRPCInstance ()*RPCInstance {
+func newRPCInstance() *RPCInstance {
 	return &RPCInstance{
 		servers: make(map[string]*Server),
 	}
@@ -89,7 +90,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 		var method = new(Method)
 		t_method := t.Method(i)
 		method.srv = s.instance // MethodFunc 的第一个参数
-		method.methodName = t_method.Name
+		method.methodName = path.Join(name, t_method.Name)
 		method.method = rv.Method(i)
 		methodType := t_method.Type
 		numOfParams := methodType.NumIn()
@@ -126,7 +127,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 		if !method.resultTypes[numOfResult-1].Implements(errType) {
 			return ErrInvalidResultType
 		}
-
+		log.Println("register: ", method.methodName)
 		s.methods[method.methodName] = method
 	}
 	rpc.servers[s.ServerName] = s
@@ -141,10 +142,10 @@ func (rpc *RPCInstance) GenerateExecFunc(pctx context.Context, name string) (IMe
 	if !ok {
 		return nil, fmt.Errorf("no %s server", serverName)
 	}
-	method, ok := server.methods[methodName]
-	if !ok {
-		return nil, fmt.Errorf("no %s method", methodName)
-	}
 
+	method, ok := server.methods[name]
+	if !ok {
+		return nil, fmt.Errorf("%s server no %s method", serverName, methodName)
+	}
 	return NewMethodFunc(method)
 }

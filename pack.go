@@ -1,15 +1,22 @@
 package zrpc
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
 
 const (
-	PACKPATH  = "__pack_path__"  // pack 在集群中传播路径
-	TTL       = "__ttl__"        // pack 在集群中传播跳数
-	BLOCKSIZE = "__block_size__" // stream 请求中块大小
+	PACKPATH    = "__pack_path__"   // pack 在集群中传播路径
+	TTL         = "__ttl__"         // pack 在集群中传播跳数
+	BLOCKSIZE   = "__block_size__"  // stream 请求中块大小
+	METHOD_NAME = "__method_name__" // 方法名称
+	MESSAGEID   = "__msg_id__"      // 消息id
+)
+
+var (
+	ErrNoMessageID = errors.New("zrpc: pack: no messageid")
 )
 
 type Header map[string][]string
@@ -44,10 +51,10 @@ func (h Header) Has(key string) bool {
 }
 
 type Pack struct {
-	Identity   string               `msgpack:"identity"`
-	MethodName string               `msgpack:"method"`
-	Header     Header               `msgpack:"head"`
-	Args       []msgpack.RawMessage `msgpack:"args"`
+	Identity string               `msgpack:"identity"`
+	Stage    string               `msgpack:"method"`
+	Header   Header               `msgpack:"head"`
+	Args     []msgpack.RawMessage `msgpack:"args"`
 }
 
 func (p *Pack) Set(key, value string) {
@@ -58,7 +65,18 @@ func (p *Pack) Set(key, value string) {
 }
 
 func (p *Pack) Get(key string) string {
+	if p.Header == nil {
+		return ""
+	}
 	return p.Header.Get(key)
+}
+
+func (p *Pack) SetMethodName(method string) {
+	p.Set(METHOD_NAME, method)
+}
+
+func (p *Pack) MethodName() string {
+	return p.Get(METHOD_NAME)
 }
 
 func (p *Pack) Marshal(args []interface{}) (pack []byte, err error) {

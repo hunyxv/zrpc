@@ -80,7 +80,7 @@ func client(soc *zmq.Socket, pack *zrpc.Pack) [][]byte {
 	if err != nil {
 		panic(err)
 	}
-	log.Println("msg: ", msg, string(msg[0]))
+	//log.Println("msg: ", msg, string(msg[0]))
 	return msg
 }
 
@@ -98,37 +98,42 @@ func TestRunclient(t *testing.T) {
 	defer soc.Close()
 	defer soc.Disconnect("tcp://127.0.0.1:8080")
 
-	now := time.Now()
-	ctx := &zrpc.Context{
-		Context: context.Background(),
-	}
-	rawCtx, err := msgpack.Marshal(ctx)
-	if err != nil {
-		panic(err)
-	}
+	for i := 0; i < 10; i++ {
 
-	pack := &zrpc.Pack{
-		Identity:   id,
-		Header:     make(zrpc.Header),
-		MethodName: "sayhello/Hello",
-		Args:       []msgpack.RawMessage{rawCtx},
+		now := time.Now()
+		ctx := &zrpc.Context{
+			Context: context.Background(),
+		}
+		rawCtx, err := msgpack.Marshal(ctx)
+		if err != nil {
+			panic(err)
+		}
+
+		pack := &zrpc.Pack{
+			Identity: id,
+			Header:   make(zrpc.Header),
+			Stage:    zrpc.REQUEST,
+			Args:     []msgpack.RawMessage{rawCtx},
+		}
+		pack.SetMethodName("sayhello/Hello")
+		pack.Set(zrpc.MESSAGEID, zrpc.NewMessageID())
+		r := client(soc, pack)
+
+		var result zrpc.Pack
+
+		err = msgpack.Unmarshal(r[0], &result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Log(result)
+
+		var world string
+		msgpack.Unmarshal(result.Args[0], &world)
+		var e string
+		msgpack.Unmarshal(result.Args[1], &e)
+		t.Log("result: ", world, errors.New(e))
+		t.Logf("takes %s", time.Since(now))
 	}
-	r := client(soc, pack)
-
-	var result zrpc.Pack
-
-	err = msgpack.Unmarshal(r[0], &result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log(result)
-
-	var world string
-	msgpack.Unmarshal(result.Args[0], &world)
-	var e string
-	msgpack.Unmarshal(result.Args[1], &e)
-	t.Log("result: ", world, errors.New(e))
-	t.Logf("takes %s", time.Since(now))
 }
 
 func TestStreamReqFunc(t *testing.T) {
@@ -156,12 +161,15 @@ func TestStreamReqFunc(t *testing.T) {
 
 	rawline, _ := msgpack.Marshal([]byte(fmt.Sprintf("hello %d\n", 0)))
 	pack := &zrpc.Pack{
-		Identity:   id,
-		Header:     make(zrpc.Header),
-		MethodName: "sayhello/StreamReqFunc",
-		Args:       []msgpack.RawMessage{rawCtx, rawline},
+		Identity: id,
+		Header:   make(zrpc.Header),
+		Stage:    zrpc.REQUEST,
+		Args:     []msgpack.RawMessage{rawCtx, rawline},
 	}
-	for i := 0; i < 10; i++ {
+	pack.SetMethodName("sayhello/StreamReqFunc")
+	msgid := zrpc.NewMessageID()
+	pack.Set(zrpc.MESSAGEID, msgid)
+	for i := 0; i < 100; i++ {
 		rawPack, err := msgpack.Marshal(&pack)
 		if err != nil {
 			panic(err)
@@ -174,18 +182,22 @@ func TestStreamReqFunc(t *testing.T) {
 		log.Println("total: ", total)
 		rawline, _ = msgpack.Marshal([]byte(fmt.Sprintf("hello %d\n", i+1)))
 		pack = &zrpc.Pack{
-			Identity:   id,
-			Header:     make(zrpc.Header),
-			MethodName: "sayhello/StreamReqFunc",
-			Args:       []msgpack.RawMessage{rawline},
+			Identity: id,
+			Header:   make(zrpc.Header),
+			Stage:    zrpc.STREAM,
+			Args:     []msgpack.RawMessage{rawline},
 		}
+		pack.SetMethodName("sayhello/StreamReqFunc")
+		pack.Set(zrpc.MESSAGEID, msgid)
 	}
 
 	// end
 	pack = &zrpc.Pack{
-		Identity:   id,
-		MethodName: zrpc.STREAM_END,
+		Identity: id,
+		Stage:    zrpc.STREAM_END,
 	}
+	pack.SetMethodName("sayhello/StreamReqFunc")
+	pack.Set(zrpc.MESSAGEID, msgid)
 	rawPack, err := msgpack.Marshal(&pack)
 	if err != nil {
 		panic(err)

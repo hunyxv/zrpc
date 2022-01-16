@@ -13,23 +13,27 @@ import (
 )
 
 /*
-	endpoint 可以是 scheme://[ip]:port，也可以是 scheme://[demain]:port
-
+	客户端 -- 服务端: DEALER -- ROUTER
+	集群前端：DEALER
+	集群后端：ROUTER
 */
 
 const (
+	// stage
 	REQUEST    = string(rune(iota + 1)) // 请求包
 	REPLY                               // 响应包，与 req 对应的 回复
-	HEARTBEAT                           // 心跳包
-	SYNCSTATE                           // 同步节点状态
-	DISCONNECT                          // 通知让客户端断开连接
-	ERROR                               // 异常包
 	STREAM                              // stream
-	STREAM_END
+	STREAM_END                          // stream 结束
+
+	// method name
+	HEARTBEAT  = string(rune(iota + 1000)) // 心跳包
+	ERROR                                  // 异常包
+	SYNCSTATE                              // 同步节点状态
+	DISCONNECT                             // 通知让客户端断开连接
 )
 
 var (
-	METHOD_NAME = map[string]string{
+	MethodNameTable = map[string]string{
 		REQUEST:    "REQUEST",
 		REPLY:      "REPLY",
 		HEARTBEAT:  "HEARTBEAT",
@@ -155,9 +159,9 @@ func (b *broker) Run() {
 			return
 		case <-tick.C: // 发送心跳包
 			heartbeat := &Pack{
-				Identity:   b.NodeState.NodeID,
-				MethodName: HEARTBEAT,
+				Identity: b.NodeState.NodeID,
 			}
+			heartbeat.SetMethodName(HEARTBEAT)
 			raw, _ := msgpack.Marshal(heartbeat)
 			b.statebe.sendChan <- [][]byte{raw}
 			b.lock.Lock()
@@ -173,7 +177,7 @@ func (b *broker) Run() {
 			var pack *Pack
 			msgpack.Unmarshal(raws[0], &pack)
 			msgfrom := pack.Identity
-			switch pack.MethodName {
+			switch pack.MethodName() {
 			case HEARTBEAT: // 收到的心跳包，更新节点的过期时间
 				b.lock.Lock()
 				if state, ok := b.peerState[msgfrom]; ok {
@@ -233,9 +237,9 @@ func (b *broker) Run() {
 
 func (b *broker) Close(clis []string) {
 	disconnectPack := &Pack{
-		Identity:   b.state.NodeID,
-		MethodName: DISCONNECT,
+		Identity: b.state.NodeID,
 	}
+	disconnectPack.SetMethodName(DISCONNECT)
 	raw, _ := msgpack.Marshal(disconnectPack)
 	for _, to := range clis {
 		b.localfe.Send() <- [][]byte{[]byte(to), raw}
@@ -259,12 +263,12 @@ type peerNodeManager struct {
 }
 
 func newPeerNodeManager(state *NodeState, hbInterval time.Duration) (*peerNodeManager, error) {
-	clusterfe, err := newSocket(state.NodeID, zmq.ROUTER, frontend, state.ClusterEndpoint)
+	clusterfe, err := newSocket(state.NodeID, zmq.DEALER, frontend, state.ClusterEndpoint)
 	if err != nil {
 		return nil, err
 	}
 
-	clusterbe, err := newSocket(state.NodeID, zmq.DEALER, backend, "")
+	clusterbe, err := newSocket(state.NodeID, zmq.ROUTER, backend, "")
 	if err != nil {
 		clusterbe.Close()
 		return nil, err
@@ -350,9 +354,9 @@ func (peer *peerNodeManager) ForwardToPeerNode(to string, pack *Pack) {
 // PublishNodeState 发布本节点状态
 func (peer *peerNodeManager) PublishNodeState() {
 	pack := &Pack{
-		Identity:   peer.NodeState.NodeID,
-		MethodName: SYNCSTATE,
+		Identity: peer.NodeState.NodeID,
 	}
+	pack.SetMethodName(SYNCSTATE)
 	// 空闲&&暂停状态
 	if peer.NodeState.isIdle() && peer.NodeState.isPausing() {
 		peer.NodeState.pursue()
@@ -374,9 +378,9 @@ func (peer *peerNodeManager) PublishNodeState() {
 
 // refreshNodeStatus 接收订阅的节点状态，刷新节点信息（主要是空闲繁忙状态）
 func (peer *peerNodeManager) refreshNodeStatus(node *Node) {
-	peer.lock.Lock()
+	// peer.lock.Lock()
 	peer.peerState[node.NodeID].Node = node
-	peer.lock.Unlock()
+	// peer.lock.Unlock()
 }
 
 func (peer *peerNodeManager) Close() error {

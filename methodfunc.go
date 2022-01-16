@@ -11,14 +11,15 @@ import (
 )
 
 type IMethodFunc interface {
+	FuncMode() FuncMode
 	Call(p *Pack, r IReply)
 	Next(params []msgpack.RawMessage)
 	End()
 }
 
 type IReply interface {
-	Send(p *Pack) error
 	Reply(p *Pack) error
+	SendError(identity string, err error)
 }
 
 func NewMethodFunc(method *Method) (IMethodFunc, error) {
@@ -50,16 +51,8 @@ func NewReqRepFunc(m *Method) IMethodFunc {
 	}
 }
 
-func (f *ReqRepFunc) sendErr(e error) {
-	pack := &Pack{
-		Identity:   f.id,
-		MethodName: ERROR,
-		Args:       make([]msgpack.RawMessage, len(f.Method.resultTypes)),
-	}
-
-	rawerr, _ := msgpack.Marshal(e.Error())
-	pack.Args[len(pack.Args)-1] = rawerr
-	f.reply.Reply(pack)
+func (f *ReqRepFunc) FuncMode() FuncMode {
+	return f.Method.mode
 }
 
 // Call 将 func 放入 pool 中运行
@@ -68,7 +61,7 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	f.id = p.Identity
 
 	if len(p.Args) != len(f.Method.paramTypes) {
-		f.sendErr(fmt.Errorf("not enough arguments in call to %s", f.Method.methodName))
+		f.reply.SendError(f.id, fmt.Errorf("not enough arguments in call to %s", f.Method.methodName))
 		return
 	}
 
@@ -78,9 +71,8 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	var ctx *Context
 	err := msgpack.Unmarshal(p.Args[0], &ctx)
 	if err != nil {
-		// TODO 异常处理
 		log.Println("err: ", err)
-		f.sendErr(err)
+		f.reply.SendError(f.id, err)
 		return
 	}
 	paramsValue[0] = reflect.ValueOf(ctx)
@@ -90,7 +82,7 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 		fieldValue := reflect.New(fieldType)
 		err := msgpack.Unmarshal(p.Args[i], fieldValue.Interface())
 		if err != nil {
-			// TODO 异常处理
+			f.reply.SendError(f.id, err)
 			return
 		}
 		paramsValue[i] = fieldValue
@@ -115,10 +107,11 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	}
 
 	resp := &Pack{
-		Identity:   p.Identity,
-		MethodName: REPLY,
-		Args:       rets,
+		Identity: p.Identity,
+		Stage:    REPLY,
+		Args:     rets,
 	}
+	resp.SetMethodName(p.MethodName())
 	f.reply.Reply(resp)
 }
 
@@ -140,17 +133,8 @@ func NewStreamReqRepFunc(m *Method) IMethodFunc {
 	}
 }
 
-func (srf *StreamReqRepFunc) sendErr(e error) {
-	log.Println("err: ", e.Error())
-	pack := &Pack{
-		Identity:   srf.id,
-		MethodName: ERROR,
-		Args:       make([]msgpack.RawMessage, len(srf.Method.resultTypes)),
-	}
-
-	rawerr, _ := msgpack.Marshal(e.Error())
-	pack.Args[len(pack.Args)-1] = rawerr
-	srf.reply.Reply(pack)
+func (srf *StreamReqRepFunc) FuncMode() FuncMode {
+	return srf.Method.mode
 }
 
 func (srf *StreamReqRepFunc) Call(p *Pack, r IReply) {
@@ -158,7 +142,7 @@ func (srf *StreamReqRepFunc) Call(p *Pack, r IReply) {
 	srf.reply = r
 
 	if len(p.Args) != len(srf.Method.paramTypes) {
-		srf.sendErr(fmt.Errorf("not enough arguments in call to %s", srf.Method.methodName))
+		srf.reply.SendError(srf.id, fmt.Errorf("not enough arguments in call to %s", srf.Method.methodName))
 		return
 	}
 	// 反序列化参数
@@ -169,7 +153,7 @@ func (srf *StreamReqRepFunc) Call(p *Pack, r IReply) {
 	if err != nil {
 		// TODO 异常处理
 		log.Println("err: ", err)
-		srf.sendErr(err)
+		srf.reply.SendError(srf.id, err)
 		return
 	}
 	paramsValue[0] = reflect.ValueOf(ctx)
@@ -212,10 +196,11 @@ func (srf *StreamReqRepFunc) Call(p *Pack, r IReply) {
 		}
 
 		resp := &Pack{
-			Identity:   p.Identity,
-			MethodName: REPLY,
-			Args:       rets,
+			Identity: p.Identity,
+			Stage:    REPLY,
+			Args:     rets,
 		}
+		resp.SetMethodName(p.MethodName())
 		srf.reply.Reply(resp)
 	}()
 }
@@ -231,7 +216,7 @@ func (srf *StreamReqRepFunc) Next(data []msgpack.RawMessage) {
 	for i != len(raw) {
 		n, err := srf.buf.Write(raw[i:])
 		if err != nil && err != io.EOF {
-			srf.sendErr(err)
+			srf.reply.SendError(srf.id, err)
 			return
 		}
 		i += n
@@ -244,7 +229,7 @@ func (srf *StreamReqRepFunc) End() {
 }
 
 type ReqStreamRepFunc struct {
-	Method reflect.Value // function
+	Method *Method // function
 	reply  IReply
 	rw     io.ReadWriteCloser
 	buf    *bufio.ReadWriter
@@ -253,6 +238,10 @@ type ReqStreamRepFunc struct {
 func NewReqStreamRepFunc(m *Method) IMethodFunc {
 	// TODO
 	return nil
+}
+
+func (rsf *ReqStreamRepFunc) FuncMode() FuncMode {
+	return rsf.Method.mode
 }
 
 func (rsf *ReqStreamRepFunc) Call(p *Pack, r IReply) {
@@ -266,7 +255,7 @@ func (rsf *ReqStreamRepFunc) Next([]msgpack.RawMessage) {
 func (rsf *ReqStreamRepFunc) End() {}
 
 type StreamFunc struct {
-	Method reflect.Value // function
+	Method *Method // function
 	reply  IReply
 	rw     io.ReadWriteCloser
 	buf    *bufio.ReadWriter
@@ -275,6 +264,10 @@ type StreamFunc struct {
 func NewStreamFunc(m *Method) IMethodFunc {
 	// TODO
 	return nil
+}
+
+func (sf *StreamFunc) FuncMode() FuncMode {
+	return sf.Method.mode
 }
 
 func (sf *StreamFunc) Call(p *Pack, r IReply) {
