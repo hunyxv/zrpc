@@ -44,7 +44,7 @@ type NodeState struct {
 }
 
 func NewNodeState(node *Node, gpoolSize int) (*NodeState, error) {
-	pool, err := ants.NewPool(gpoolSize)
+	pool, err := ants.NewPool(gpoolSize, ants.WithNonblocking(true))
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func (s *NodeState) isIdle() bool {
 	// 本节点
 	if s.gpool != nil {
 		// 本节点负载大于 80% 不再接收其他节点任务
-		return float64(s.gpool.Running())/float64(s.gpool.Cap()) <= 0.8
+		return float64(s.gpool.Running())/float64(s.gpool.Cap()) <= 0.9
 	}
 
 	// 平行节点

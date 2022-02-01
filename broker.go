@@ -343,7 +343,13 @@ func (peer *peerNodeManager) AllPeerNode() []Node {
 // ForwardToPeerNode 本节点处理不了了，转发给其他节点
 func (peer *peerNodeManager) ForwardToPeerNode(to string, pack *Pack) {
 	ttlStr := pack.Get(TTL)
-	ttl, _ := strconv.Atoi(ttlStr)
+	var ttl int
+	if ttlStr == "" {
+		ttl = 0
+	} else {
+		ttl, _ = strconv.Atoi(ttlStr)
+	}
+
 	pack.Header.Set(TTL, strconv.Itoa(ttl+1)) // 跳数+1
 	pack.Header.Add(PACKPATH, peer.NodeState.NodeID)
 

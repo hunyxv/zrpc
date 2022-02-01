@@ -17,6 +17,7 @@ var (
 	ErrInvalidResultType = errors.New("zrpc: the last return value must be error")
 	ErrInvalidParamType  = errors.New("zrpc: the first param must be Context")
 	ErrTooFewParam       = errors.New("zrpc: too few parameters")
+	ErrSubmitTimeout     = errors.New("zrpc: submit task timed out")
 
 	errType   = reflect.TypeOf(new(error)).Elem()
 	ctxType   = reflect.TypeOf(new(context.Context)).Elem()
