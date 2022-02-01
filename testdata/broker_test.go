@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/hunyxv/zrpc"
+	"github.com/sirupsen/logrus"
 )
 
 func runBroker(state *zrpc.NodeState) (zrpc.Broker, error) {
-	broker, err := zrpc.NewBroker(state, 5*time.Second)
+	broker, err := zrpc.NewBroker(state, 5*time.Second, logrus.StandardLogger())
 	if err != nil {
 		return nil, err
 	}

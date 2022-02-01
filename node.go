@@ -4,19 +4,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/panjf2000/ants/v2"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-var DefaultNodeState = &NodeState{
-	Node: &Node{
-		ServiceName:     getServerName(),
-		NodeID:          "",
-		LocalEndpoint:   "tcp://0.0.0.0:8080",
-		ClusterEndpoint: "tcp://0.0.0.0:8081",
-		StateEndpoint:   "tcp://0.0.0.0:8082",
-		IsIdle:          true,
-	},
-}
+var DefaultNodeState, _ = NewNodeState(&Node{
+	ServiceName:     getServerName(),
+	NodeID:          "",
+	LocalEndpoint:   "tcp://0.0.0.0:8080",
+	ClusterEndpoint: "tcp://0.0.0.0:8081",
+	StateEndpoint:   "tcp://0.0.0.0:8082",
+	IsIdle:          true,
+}, 1000)
 
 // Node 节点信息
 type Node struct {
@@ -28,21 +27,31 @@ type Node struct {
 	IsIdle          bool   `json:"is_idle" msgpack:"is_idle"`
 }
 
-type Metrics interface {
-	Cap() int
-	Running() int
-}
+// type Metrics interface {
+// 	Cap() int
+// 	Running() int
+// 	Submit(task func()) error
+// }
 
-var _ Metrics = (*Workbench)(nil)
+// var _ Metrics = (*Workbench)(nil)
 
 type NodeState struct {
 	*Node
 
-	metrices Metrics
-	flag     int32 // 暂停工作
-	//clusterIdleCap int       // 集群空闲总容量（不包含本节点）
+	gpool      *ants.Pool
+	flag       int32     // 暂停工作
 	expiration time.Time // 过期时间，通过心跳来更新
-	//lock           sync.RWMutex
+}
+
+func NewNodeState(node *Node, gpoolSize int) (*NodeState, error) {
+	pool, err := ants.NewPool(gpoolSize)
+	if err != nil {
+		return nil, err
+	}
+	return &NodeState{
+		Node:  node,
+		gpool: pool,
+	}, nil
 }
 
 func (s *NodeState) pause() {
@@ -59,9 +68,9 @@ func (s *NodeState) isPausing() bool {
 
 func (s *NodeState) isIdle() bool {
 	// 本节点
-	if s.metrices != nil {
+	if s.gpool != nil {
 		// 本节点负载大于 80% 不再接收其他节点任务
-		return float64(s.metrices.Running())/float64(s.metrices.Cap()) <= 0.8
+		return float64(s.gpool.Running())/float64(s.gpool.Cap()) <= 0.8
 	}
 
 	// 平行节点

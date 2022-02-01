@@ -15,6 +15,7 @@ import (
 
 	"github.com/hunyxv/zrpc"
 	zmq "github.com/pebbe/zmq4"
+	"github.com/sirupsen/logrus"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -50,7 +51,7 @@ func (s SayHello) StreamReqFunc(ctx context.Context, reader io.Reader) (string, 
 
 func TestRunserver(t *testing.T) {
 	var i *ISayHello
-	server := zrpc.NewSvcMultiplexer(zrpc.DefaultNodeState)
+	server := zrpc.NewSvcMultiplexer(zrpc.DefaultNodeState, logrus.StandardLogger())
 	err := zrpc.RegisterServer("sayhello/", &SayHello{}, i)
 	if err != nil {
 		t.Fatal(err)

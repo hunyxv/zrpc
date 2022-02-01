@@ -4,6 +4,7 @@ go 1.17
 
 require (
 	github.com/panjf2000/ants v1.2.1
+	github.com/panjf2000/ants/v2 v2.4.7
 	github.com/pborman/uuid v1.2.1
 	github.com/pebbe/zmq4 v1.2.7
 	github.com/sirupsen/logrus v1.8.1

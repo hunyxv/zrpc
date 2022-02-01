@@ -19,8 +19,8 @@ type SvcMultiplexer struct {
 	mutex          sync.RWMutex
 }
 
-func NewSvcMultiplexer(nodeState *NodeState) *SvcMultiplexer {
-	broker, err := NewBroker(nodeState, 5*time.Second)
+func NewSvcMultiplexer(nodeState *NodeState, logger Logger) *SvcMultiplexer {
+	broker, err := NewBroker(nodeState, 5*time.Second, logger)
 	if err != nil {
 		panic(err)
 	}
@@ -59,6 +59,10 @@ func (m *SvcMultiplexer) SendError(id string, e error) {
 	}
 }
 
+func (m *SvcMultiplexer) submitTask(f func()) {
+	m.nodeState.gpool.Submit(f)
+}
+
 func (m *SvcMultiplexer) dispatcher(ctx context.Context) {
 	for pack := range m.broker.NewTask() {
 		msgid := pack.Get(MESSAGEID)
@@ -76,22 +80,28 @@ func (m *SvcMultiplexer) dispatcher(ctx context.Context) {
 				}
 
 				if mf.FuncMode() == ReqRep {
-					mf.Call(pack, m)
+					m.submitTask(func() {
+						mf.Call(pack, m)
+					})
 				} else {
 					m.mutex.Lock()
 					m.activeChannels[msgid] = mf
 					m.mutex.Unlock()
-					mf.Call(pack, m)
+					m.submitTask(func() {
+						mf.Call(pack, m)
+					})
 				}
 			} else {
-
+				
 			}
 		case STREAM: // 流式请求中
 			m.mutex.RLock()
 			mf, ok := m.activeChannels[msgid]
 			m.mutex.RUnlock()
 			if ok {
-				mf.Next(pack.Args)
+				m.submitTask(func() {
+					mf.Next(pack.Args)
+				})
 			} else {
 
 			}
@@ -100,50 +110,9 @@ func (m *SvcMultiplexer) dispatcher(ctx context.Context) {
 			mf, ok := m.activeChannels[msgid]
 			m.mutex.RUnlock()
 			if ok {
-				mf.End()
+				m.submitTask(func() { mf.End() })
 			}
 		}
-
-		// id := pack.Header.Get(MESSAGEID)
-		// if m.nodeState.isIdle() {
-		// 	m.mutex.RLock()
-		// 	mf, ok := m.activeChannels[id]
-		// 	m.mutex.RUnlock()
-		// 	if ok {
-		// 		if pack.MethodName == STREAM_END {
-		// 			mf.End()
-		// 			continue
-		// 		}
-		// 		mf.Next(pack.Args)
-		// 	} else {
-		// 		mf, err := m.rpc.GenerateExecFunc(ctx, pack.MethodName)
-		// 		if err != nil {
-		// 			// TODO 发生 error
-		// 			log.Print(err)
-		// 			return
-		// 		}
-		// 		m.activeChannels[id] = mf
-		// 		mf.Call(pack, m)
-		// 	}
-		// }
-
-		// if mf, ok := m.activeChannels[id]; ok {
-		// 	if pack.Stage == STREAM_END {
-		// 		mf.End()
-		// 		continue
-		// 	}
-		// 	mf.Next(pack.Args)
-		// } else {
-		// 	mf, err := m.rpc.GenerateExecFunc(ctx, pack.MethodName())
-		// 	if err != nil {
-		// 		// TODO 发生 error
-		// 		log.Print(err)
-		// 		return
-		// 	}
-		// 	m.activeChannels[id] = mf
-		// 	mf.Call(pack, m)
-		// 	//time.Sleep(1 * time.Second) // TODO 保证先出实话 Call 中的数据
-		// }
 	}
 }
 

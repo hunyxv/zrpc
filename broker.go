@@ -8,7 +8,6 @@ import (
 	"time"
 
 	zmq "github.com/pebbe/zmq4"
-	"github.com/sirupsen/logrus"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -97,9 +96,10 @@ type broker struct {
 	taskChan chan *Pack
 	localfe  *socket // local frontend
 	state    *NodeState
+	logger   Logger
 }
 
-func NewBroker(state *NodeState, hbInterval time.Duration) (Broker, error) {
+func NewBroker(state *NodeState, hbInterval time.Duration, logger Logger) (Broker, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	manager, err := newPeerNodeManager(state, hbInterval)
 	if err != nil {
@@ -120,6 +120,7 @@ func NewBroker(state *NodeState, hbInterval time.Duration) (Broker, error) {
 		ctx:      ctx,
 		cancel:   cancel,
 		taskChan: make(chan *Pack, chanCap),
+		logger:   logger,
 		localfe:  localfe,
 		state:    state,
 	}, nil
@@ -182,14 +183,13 @@ func (b *broker) Run() {
 				b.lock.Lock()
 				if state, ok := b.peerState[msgfrom]; ok {
 					state.expiration = time.Now().Add(b.hbInterval * 3)
-					logger.WithFields(logrus.Fields{"from": msgfrom, "expiration": state.expiration}).Debug("heartbeat")
+					b.logger.Debugf("'%s': heartbeat, expiration: %v", msgfrom, state.expiration)
 				}
 				b.lock.Unlock()
 			case SYNCSTATE:
 				var node *Node
 				if err := msgpack.Unmarshal(pack.Args[0], &node); err != nil {
-					logger.WithError(err).WithFields(logrus.Fields{
-						"pack": pack, "from": msgfrom}).Error("msgpack unmarshal err")
+					b.logger.Errorf("msgpack unmarshal err: %v", err)
 					continue
 				}
 				b.lock.Lock()
@@ -207,7 +207,7 @@ func (b *broker) Run() {
 			var pack *Pack
 			msgpack.Unmarshal(raws[1], &pack)
 			if pack.Identity != msgfrom {
-				logger.Warnf("pack.id: %s, from: %s", pack.Identity, msgfrom)
+				b.logger.Warnf("pack.id: %s, from: %s", pack.Identity, msgfrom)
 				continue
 			}
 			// 来自客户端的心跳交由上层处理
