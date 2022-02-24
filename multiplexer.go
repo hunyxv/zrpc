@@ -3,25 +3,27 @@ package zrpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 
+	"github.com/hunyxv/utils/timer"
 	"github.com/panjf2000/ants/v2"
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 var _ IReply = (*SvcMultiplexer)(nil)
 
 type SvcMultiplexer struct {
 	logger         Logger
-	activeChannels map[string]IMethodFunc
+	activeChannels *activeMethodFuncs
 	nodeState      *NodeState
 	broker         Broker
 	rpc            *RPCInstance
-	mutex          sync.RWMutex
-	forward        sync.Map
-	i              int
+	timer          *timer.HashedWheelTimer
+	forward        *myMap
+	c              chan int
 }
 
 func NewSvcMultiplexer(nodeState *NodeState, logger Logger) *SvcMultiplexer {
@@ -29,35 +31,45 @@ func NewSvcMultiplexer(nodeState *NodeState, logger Logger) *SvcMultiplexer {
 	if err != nil {
 		panic(err)
 	}
-	return &SvcMultiplexer{
+
+	t, err := timer.NewHashedWheelTimer(context.Background(), timer.WithWorkPool(nodeState.gpool))
+	if err != nil {
+		panic(err)
+	}
+	mux := &SvcMultiplexer{
 		logger:         logger,
-		activeChannels: map[string]IMethodFunc{},
+		activeChannels: newActiveMethodFuncs(t),
 		nodeState:      nodeState,
 		broker:         broker,
 		rpc:            DefaultRPCInstance,
+		timer:          t,
+		forward:        newMyMap(t),
+		c:              make(chan int),
 	}
+	return mux
 }
 
 func (m *SvcMultiplexer) Reply(p *Pack) error {
 	switch p.Stage {
-	case REPLY: // 应答
+	case REPLY, ERROR: // 应答
+		msgid := p.Get(MESSAGEID)
+		//m.activeChannels.Delete(msgid)
+		m.forward.Delete(msgid)
+		return m.broker.Reply(p)
 	case STREAM: // 流式响应
 		return m.broker.Reply(p)
 	case STREAM_END: // 流式响应结束
+		return m.broker.Reply(p)
 	}
-	msgid := p.Get(MESSAGEID)
-	m.mutex.Lock()
-	delete(m.activeChannels, msgid)
-	m.mutex.Unlock()
-	return m.broker.Reply(p)
+	return nil
 }
 
-func (m *SvcMultiplexer) SendError(id string, e error) {
-	raw, _ := msgpack.Marshal(e.Error())
+func (m *SvcMultiplexer) SendError(pack *Pack, e error) {
 	errp := &Pack{
-		Identity: id,
+		Identity: pack.Identity,
+		Header:   pack.Header,
 		Stage:    ERROR,
-		Args:     []msgpack.RawMessage{raw},
+		Args:     [][]byte{[]byte(e.Error())},
 	}
 	errp.SetMethodName(ERROR)
 	if err := m.Reply(errp); err != nil {
@@ -65,114 +77,244 @@ func (m *SvcMultiplexer) SendError(id string, e error) {
 	}
 }
 
-func (m *SvcMultiplexer) sendError(pack *Pack, e error) {
-	id := pack.Identity
-	if pid := pack.Header.Pop(PACKPATH); pid != "" {
-		id = pid
-	}
-
-	m.SendError(id, e)
-}
-
 func (m *SvcMultiplexer) submitTask(f func()) error {
 	return m.nodeState.gpool.Submit(f)
 }
 
-func (m *SvcMultiplexer) dispatcher(ctx context.Context) {
-	for pack := range m.broker.NewTask() {
-		msgid := pack.Get(MESSAGEID)
-		if msgid == "" {
-			m.sendError(pack, ErrNoMessageID)
-			continue
-		}
-		switch pack.Stage {
-		case REQUEST: // 请求
-			var fromPeerNode bool
-			ttlStr := pack.Header.Get(TTL)
-			if ttlStr != "" && ttlStr != "0" {
-				fromPeerNode = true
-			}
+func (m *SvcMultiplexer) do(msgid string, pack *Pack) error {
+	mf, err := m.rpc.GenerateExecFunc(pack.MethodName())
+	if err != nil {
+		return err
+	}
 
-			// 不是来自平行节点或本节点空闲
-			if !fromPeerNode || m.nodeState.isIdle() {
-				mf, err := m.rpc.GenerateExecFunc(ctx, pack.MethodName())
-				if err != nil {
-					m.sendError(pack, err)
-					continue
-				}
+	if mf.FuncMode() == ReqRep {
+		return m.submitTask(func() {
+			mf.Call(pack, m)
+		})
+	}
 
-				if mf.FuncMode() == ReqRep {
-					err = m.submitTask(func() {
-						mf.Call(pack, m)
-					})
-				} else {
-					m.mutex.Lock()
-					m.activeChannels[msgid] = mf
-					m.mutex.Unlock()
-					err = m.submitTask(func() {
-						mf.Call(pack, m)
-					})
-				}
-				if err == nil {
-					continue
-				} else if !errors.Is(err, ants.ErrPoolOverload) {
-					// 本地满载了，转发，报的不是满载异常，返回异常给客户端
-					m.logger.Errorf("SvcMultiplexer: %v", err)
-					m.sendError(pack, ErrSubmitTimeout)
-					continue
-				}
-			}
-			// 转发给其他节点
-			n, err := m.SelectPeerNode()
-			if err != nil {
-				// 找不到空闲节点
-				m.logger.Error("SvcMultiplexer: %v", err)
-				m.sendError(pack, ErrSubmitTimeout)
+	m.activeChannels.Store(msgid, mf)
+	return m.submitTask(func() {
+		mf.Call(pack, m)
+	})
+}
+
+func (m *SvcMultiplexer) dispatcher() {
+	for {
+		select {
+		case <-m.c:
+			return
+		case pack := <-m.broker.NewTask():
+			msgid := pack.Get(MESSAGEID)
+			if msgid == "" {
+				m.SendError(pack, ErrNoMessageID)
 				continue
 			}
-			m.broker.ForwardToPeerNode(n.NodeID, pack)
-		case STREAM: // 流式请求中
-			m.mutex.RLock()
-			mf, ok := m.activeChannels[msgid]
-			m.mutex.RUnlock()
-			if ok {
-				m.submitTask(func() {
-					mf.Next(pack.Args)
-				})
-			} else {
+			switch pack.Stage {
+			case REQUEST: // 请求
+				var fromPeerNode bool
+				ttlStr := pack.Header.Get(TTL)
+				if ttlStr != "" && ttlStr != "0" {
+					fromPeerNode = true
+				}
 
-			}
-		case STREAM_END: // 流式请求结束
-			m.mutex.RLock()
-			mf, ok := m.activeChannels[msgid]
-			m.mutex.RUnlock()
-			if ok {
-				m.submitTask(func() { mf.End() })
+				// 不是来自平行节点或本节点空闲
+				if !fromPeerNode || m.nodeState.isIdle() {
+					err := m.do(msgid, pack)
+					if err == nil {
+						continue
+					} else if !errors.Is(err, ants.ErrPoolOverload) {
+						// 本地满载了，转发。报的不是满载异常，返回异常给客户端
+						m.logger.Errorf("SvcMultiplexer: %v", err)
+						m.SendError(pack, ErrSubmitTimeout)
+						continue
+					}
+				}
+
+				// 转发给其他节点
+				n, err := m.SelectPeerNode()
+				if err != nil {
+					// 找不到其他空闲节点,就本节点处理
+					m.logger.Warnf("SvcMultiplexer: %v", err)
+					if err := m.do(msgid, pack); err != nil {
+						// 本地无法处理报错
+						m.logger.Errorf("SvcMultiplexer: %v", err)
+						m.SendError(pack, ErrSubmitTimeout)
+					}
+					continue
+				}
+				m.broker.ForwardToPeerNode(n.NodeID, pack) // 转发
+				m.forward.Store(msgid, n.NodeID)           // 保存消息和节点对应关系
+			case STREAM: // 流式请求中
+				mf, ok := m.activeChannels.Load(msgid)
+				if ok {
+					//m.submitTask(func() {
+					if methodFunc, ok := mf.(IMethodFunc); ok {
+						methodFunc.Next(pack.Args)
+					}
+					//})
+				} else {
+					value, ok := m.forward.Load(msgid)
+					if !ok {
+						// 无处理节点，丢弃
+						m.logger.Warnf("task processing node not found")
+						continue
+					}
+					nodeid := value.(string)
+					m.broker.ForwardToPeerNode(nodeid, pack)
+				}
+			case STREAM_END: // 流式请求结束
+				mf, ok := m.activeChannels.LoadAndDelete(msgid)
+				if ok {
+					m.submitTask(func() {
+						fmt.Println("closed....")
+						if methodFunc, ok := mf.(IMethodFunc); ok {
+							methodFunc.End()
+						}
+					})
+				} else {
+					value, ok := m.forward.Load(msgid)
+					if !ok {
+						// 无处理节点，丢弃
+						m.logger.Warnf("stage%s: task processing node not found", STREAM_END)
+						continue
+					}
+					nodeid := value.(string)
+					m.broker.ForwardToPeerNode(nodeid, pack)
+				}
 			}
 		}
 	}
 }
 
+// func (m *SvcMultiplexer) dispatcher2() {
+// 	for {
+// 		select {
+// 		case <-m.c:
+// 			return
+// 		case pack := <-m.broker.NewTask():
+// 			msgid := pack.Get(MESSAGEID)
+// 			if msgid == "" {
+// 				m.sendError(pack, ErrNoMessageID)
+// 				continue
+// 			}
+
+// 			// 是否在本节点
+// 			mfValue, ok := m.activeChannels.Load(msgid)
+// 			if !ok {
+// 				// 是否已经由本节点转发
+// 				mfValue, ok = m.forward.Load(msgid)
+// 				if !ok {
+// 					// 可能是个新的请求
+// 					// 本节点有空闲
+// 					if m.nodeState.isIdle() {
+// 						mf, err := m.rpc.GenerateExecFunc(pack.MethodName())
+// 						if err != nil {
+// 							m.sendError(pack, err)
+// 							continue
+// 						}
+// 						// 请求 -- 响应型
+// 						if mf.FuncMode() != ReqRep {
+// 							m.activeChannels.Store(msgid, mf)
+// 						}
+// 						m.submitTask(func() {
+// 							mf.Call(pack, m)
+// 						})
+// 						continue
+// 					} else {
+// 						n, err := m.SelectPeerNode()
+// 						if err != nil {
+// 							// 找不到其他空闲节点,就本节点处理
+// 							m.logger.Warnf("SvcMultiplexer: %v", err)
+// 							if err := m.do(msgid, pack); err != nil {
+// 								// 本地无法处理报错
+// 								m.logger.Errorf("SvcMultiplexer: %v", err)
+// 								m.sendError(pack, ErrSubmitTimeout)
+// 							}
+// 							continue
+// 						}
+// 						m.broker.ForwardToPeerNode(n.NodeID, pack) // 转发
+// 						m.forward.Store(msgid, n.NodeID)           // 保存消息和节点对应关系
+// 					}
+
+// 				}
+// 			}
+// 		}
+// 	}
+
+// }
+
 func (m *SvcMultiplexer) SelectPeerNode() (n Node, err error) {
 	nodes := m.broker.AllPeerNode()
-	defer func() {
-		m.i = (m.i + 1) % len(nodes)
-	}()
+	i := rand.Intn(len(nodes))
 	for j := 0; j < len(nodes); j++ {
-		if nodes[m.i].IsIdle {
-			return nodes[m.i], nil
+		if nodes[i].IsIdle {
+			return nodes[i], nil
 		}
-		m.i = (m.i + 1) % len(nodes)
+		i = (i + 1) % len(nodes)
 	}
 	err = errors.New("no idle nodes")
 	return
 }
 
-func (m *SvcMultiplexer) Run(ctx context.Context) {
+func (m *SvcMultiplexer) Run() {
+	go m.timer.Start()
 	go m.broker.Run()
-	m.dispatcher(ctx)
+	m.dispatcher()
 }
 
 func (m *SvcMultiplexer) Close() {
+	m.timer.Stop()
 	m.broker.Close(nil) // TODO
+	close(m.c)
+}
+
+type activeMethodFuncs struct {
+	sync.Map
+	timer *timer.HashedWheelTimer
+}
+
+func newActiveMethodFuncs(t *timer.HashedWheelTimer) *activeMethodFuncs {
+	return &activeMethodFuncs{
+		timer: t,
+	}
+}
+
+func (m *activeMethodFuncs) Store(key interface{}, value interface{}) {
+	v := &_Value{
+		v: value,
+		t: m.timer.Submit(5*time.Minute, func() {
+			if value, ok := m.Map.LoadAndDelete(key); ok {
+				v := value.(*_Value)
+				if f, ok := v.v.(IMethodFunc); ok {
+					f.End()
+				}
+			}
+		}),
+	}
+	m.Map.Store(key, v)
+}
+
+func (m *activeMethodFuncs) Load(key interface{}) (interface{}, bool) {
+	v, ok := m.Map.Load(key)
+	if !ok {
+		return nil, false
+	}
+	value := v.(*_Value)
+	value.t.Reset()
+	return value.v, true
+}
+
+func (m *activeMethodFuncs) LoadAndDelete(key interface{}) (interface{}, bool) {
+	v, ok := m.Map.LoadAndDelete(key)
+	if !ok {
+		return nil, false
+	}
+	value := v.(*_Value)
+	value.t.Cancel()
+	return value.v, true
+}
+
+func (m *activeMethodFuncs) Delete(key interface{}) {
+	m.LoadAndDelete(key)
 }

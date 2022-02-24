@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path"
+	"sync"
 	"time"
 
+	"github.com/hunyxv/utils/timer"
 	"github.com/pborman/uuid"
 )
 
@@ -34,26 +38,54 @@ func NewMessageID() (id string) {
 	return string(_id[:])
 }
 
-type messageFlow struct {
-	from   string
-	source []string
-	strpkg string
-	pkg    *Pack
+type _Value struct {
+	v interface{}
+	t timer.TimerTask
 }
 
-func unwrap(msg []string) *messageFlow {
-	l := len(msg)
-	if l == 2 {
-		return &messageFlow{
-			from:   msg[0],
-			strpkg: msg[1],
-		}
+type myMap struct {
+	sync.Map
+	timer *timer.HashedWheelTimer
+}
+
+func newMyMap(t *timer.HashedWheelTimer) *myMap {
+	return &myMap{
+		timer: t,
 	}
-	return &messageFlow{
-		from:   msg[0],
-		source: msg[1 : l-1],
-		strpkg: msg[l-1],
+}
+
+func (m *myMap) Store(key interface{}, value interface{}) {
+	v := &_Value{
+		v: value,
+		t: m.timer.Submit(5*time.Second, func() {
+			m.Map.Delete(key)
+		}),
 	}
+	m.Map.Store(key, v)
+}
+
+func (m *myMap) Load(key interface{}) (interface{}, bool) {
+	v, ok := m.Map.Load(key)
+	if !ok {
+		return nil, false
+	}
+	value := v.(*_Value)
+	value.t.Reset()
+	return value.v, true
+}
+
+func (m *myMap) LoadAndDelete(key interface{}) (interface{}, bool) {
+	v, ok := m.Map.LoadAndDelete(key)
+	if !ok {
+		return nil, false
+	}
+	value := v.(*_Value)
+	value.t.Cancel()
+	return value.v, true
+}
+
+func (m *myMap) Delete(key interface{}) {
+	m.LoadAndDelete(key)
 }
 
 type rwchannel struct {
@@ -62,7 +94,7 @@ type rwchannel struct {
 	blockSize int
 }
 
-func NewRWChannel(size int) *rwchannel {
+func newRWChannel(size int) *rwchannel {
 	if size <= 0 {
 		size = 4096
 	}
@@ -99,7 +131,11 @@ func (rw *rwchannel) Read(b []byte) (n int, err error) {
 
 func (rw *rwchannel) Write(b []byte) (n int, err error) {
 	if len(b) <= rw.blockSize {
-		rw.ch <- b
+		select {
+		case rw.ch <- b:
+		default:
+			return 0, errors.New("channle is closed")
+		}
 		return len(b), nil
 	}
 
@@ -107,7 +143,11 @@ func (rw *rwchannel) Write(b []byte) (n int, err error) {
 		tmp := make([]byte, rw.blockSize)
 		c := copy(tmp, b)
 		b = b[c:]
-		rw.ch <- tmp[:c]
+		select {
+		case rw.ch <- b:
+		default:
+			return 0, errors.New("channle is closed")
+		}
 		n += c
 		if c < rw.blockSize {
 			return
@@ -124,4 +164,41 @@ func getServerName() string {
 	pwd, _ := os.Getwd()
 	_, name := path.Split(pwd)
 	return name
+}
+
+func dropCR(data []byte) []byte {
+	if len(data) > 0 && data[len(data)-1] == '\r' {
+		return data[0 : len(data)-1]
+	}
+	return data
+}
+
+func ScanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+
+	i := bytes.IndexByte(data, '\n')
+	if i > 0 {
+		fmt.Println(data)
+		if data[i-1] == '\r' {
+			return i + 1, dropCR(data[0:i]), nil
+		}
+		// if i+1 == len(data) {
+		// 	return i + 1, dropCR(data[0:i]), nil
+		// } else if i < len(data)-1 && data[i+1] != '\n' {
+		// 	return i + 2, dropCR(data[0 : i+1]), nil
+		// } else if !atEOF {
+		// 	return 0, nil, nil
+		// } else {
+		// 	return i + 1, dropCR(data[0:i]), nil
+		// }
+	}
+
+	// If we're at EOF, we have a final, non-terminated line. Return it.
+	if atEOF {
+		return len(data), dropCR(data), nil
+	}
+	// Request more data.
+	return 0, nil, nil
 }

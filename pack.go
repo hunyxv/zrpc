@@ -54,7 +54,7 @@ type Pack struct {
 	Identity string               `msgpack:"identity"`
 	Stage    string               `msgpack:"method"`
 	Header   Header               `msgpack:"head"`
-	Args     []msgpack.RawMessage `msgpack:"args"`
+	Args     [][]byte `msgpack:"args"`
 }
 
 func (p *Pack) Set(key, value string) {

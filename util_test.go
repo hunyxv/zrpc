@@ -1,7 +1,8 @@
-package testdata
+package zrpc
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"os"
 	"sync"
@@ -9,12 +10,36 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hunyxv/zrpc"
+	"github.com/hunyxv/utils/timer"
 )
+
+func TestMyMap(t *testing.T) {
+	timerWheel, _ := timer.NewHashedWheelTimer(context.Background())
+	go timerWheel.Start()
+	defer timerWheel.Stop()
+	m := newMyMap(timerWheel)
+	m.Store("testkey1", "aaaaaa")
+
+	v, ok := m.Load("testkey")
+	if !ok {
+		t.Fatal("key is not exists")
+	}
+	t.Log(v)
+	time.Sleep(3 * time.Second)
+	_, ok = m.Load("testkey")
+	if !ok {
+		t.Fatal("key is not exists")
+	}
+	time.Sleep(5 * time.Second)
+	_, ok = m.Load("testkey")
+	if ok {
+		t.Fatal("key is not deleted")
+	}
+}
 
 func TestMessageID(t *testing.T) {
 	now := time.Now()
-	id := zrpc.NewMessageID()
+	id := NewMessageID()
 	cost := time.Since(now)
 	t.Log(id, cost)
 }
@@ -24,7 +49,7 @@ func BenchmarkMessageID(b *testing.B) {
 
 	b.RunParallel(func(p *testing.PB) {
 		for p.Next() {
-			id := zrpc.NewMessageID()
+			id := NewMessageID()
 			if _, loaded := m.LoadOrStore(id, struct{}{}); loaded {
 				b.Fatal()
 			}
@@ -33,7 +58,7 @@ func BenchmarkMessageID(b *testing.B) {
 }
 
 func TestRWChanel(t *testing.T) {
-	rw := zrpc.NewRWChannel(0)
+	rw := newRWChannel(0)
 
 	buf := bufio.NewReadWriter(bufio.NewReader(rw), bufio.NewWriter(rw))
 	go func() {
@@ -44,7 +69,7 @@ func TestRWChanel(t *testing.T) {
 		}
 		defer f.Close()
 
-		for  {
+		for {
 			data := make([]byte, 1000)
 			n, err := f.Read(data)
 			if err != nil {
@@ -92,10 +117,10 @@ func TestRWChanel(t *testing.T) {
 }
 
 func TestRWChanel2(t *testing.T) {
-	rw := zrpc.NewRWChannel(0)
+	rw := newRWChannel(0)
 
 	buf := bufio.NewReadWriter(bufio.NewReader(rw), bufio.NewWriter(rw))
-	
+
 	str := "hello world!"
 	buf.Write([]byte(str))
 	buf.Flush()

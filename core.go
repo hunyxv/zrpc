@@ -69,9 +69,9 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 	}
 
 	t := reflect.TypeOf(server)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
+	// if t.Kind() == reflect.Ptr {
+	// 	t = t.Elem()
+	// }
 
 	if !t.Implements(reflect.TypeOf(conventions).Elem()) {
 		return ErrNotImplements
@@ -128,7 +128,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 		if !method.resultTypes[numOfResult-1].Implements(errType) {
 			return ErrInvalidResultType
 		}
-		log.Println("register: ", method.methodName)
+		log.Println("register: ", method.methodName, method.mode)
 		s.methods[method.methodName] = method
 	}
 	rpc.servers[s.ServerName] = s
@@ -137,7 +137,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 
 // GenerateExecFunc 查找并返回可执行函数
 // 	name: /{servername}/methodname
-func (rpc *RPCInstance) GenerateExecFunc(pctx context.Context, name string) (IMethodFunc, error) {
+func (rpc *RPCInstance) GenerateExecFunc(name string) (IMethodFunc, error) {
 	serverName, methodName := path.Split(name)
 	server, ok := rpc.servers[serverName]
 	if !ok {
