@@ -184,15 +184,6 @@ func ScanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if data[i-1] == '\r' {
 			return i + 1, dropCR(data[0:i]), nil
 		}
-		// if i+1 == len(data) {
-		// 	return i + 1, dropCR(data[0:i]), nil
-		// } else if i < len(data)-1 && data[i+1] != '\n' {
-		// 	return i + 2, dropCR(data[0 : i+1]), nil
-		// } else if !atEOF {
-		// 	return 0, nil, nil
-		// } else {
-		// 	return i + 1, dropCR(data[0:i]), nil
-		// }
 	}
 
 	// If we're at EOF, we have a final, non-terminated line. Return it.

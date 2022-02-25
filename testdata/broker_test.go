@@ -1,6 +1,7 @@
 package testdata
 
 import (
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -8,11 +9,37 @@ import (
 	"time"
 
 	"github.com/hunyxv/zrpc"
-	"github.com/sirupsen/logrus"
 )
 
+type logger struct{}
+
+func (*logger) Debug(args ...interface{}) {
+	log.Println(args...)
+}
+func (*logger) Debugf(format string, args ...interface{}) {
+	log.Printf(format, args...)
+}
+func (*logger) Info(args ...interface{}) {
+	log.Println(args...)
+}
+func (*logger) Infof(format string, args ...interface{}) {
+	log.Printf(format, args...)
+}
+func (*logger) Warn(args ...interface{}) {
+	log.Println(args...)
+}
+func (*logger) Warnf(format string, args ...interface{}) {
+	log.Printf(format, args...)
+}
+func (*logger) Error(args ...interface{}) {
+	log.Println(args...)
+}
+func (*logger) Errorf(format string, args ...interface{}) {
+	log.Printf(format, args...)
+}
+
 func runBroker(state *zrpc.NodeState) (zrpc.Broker, error) {
-	broker, err := zrpc.NewBroker(state, 5*time.Second, logrus.StandardLogger())
+	broker, err := zrpc.NewBroker(state, 5*time.Second, &logger{})
 	if err != nil {
 		return nil, err
 	}

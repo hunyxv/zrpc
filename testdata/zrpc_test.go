@@ -10,21 +10,21 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hunyxv/zrpc"
 	zmq "github.com/pebbe/zmq4"
-	"github.com/sirupsen/logrus"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
 type ISayHello interface {
 	Hello(ctx context.Context) (string, error)
 	StreamReqFunc(ctx context.Context, reader io.Reader) (string, error)
-	StreamRespFunc(ctx context.Context, num int, writer io.Writer) error
-	StreamFunc(ctx context.Context, total int, rw io.ReadWriter) error
+	StreamRespFunc(ctx context.Context, num int, writer io.WriteCloser) error
+	StreamFunc(ctx context.Context, total int, rw io.ReadWriteCloser) error
 }
 
 var _ ISayHello = (*SayHello)(nil)
@@ -57,7 +57,7 @@ func (s *SayHello) StreamReqFunc(ctx context.Context, reader io.Reader) (string,
 	return "stream request end", nil
 }
 
-func (s *SayHello) StreamRespFunc(ctx context.Context, num int, writer io.Writer) error {
+func (s *SayHello) StreamRespFunc(ctx context.Context, num int, writer io.WriteCloser) error {
 	log.Println("stream func ... ", num)
 	for i := 0; i < num; i++ {
 		n, err := writer.Write([]byte(fmt.Sprintf("Response %d\n", i)))
@@ -68,6 +68,7 @@ func (s *SayHello) StreamRespFunc(ctx context.Context, num int, writer io.Writer
 		log.Printf("[%d] send %d byte", i, n)
 	}
 	log.Println("end stream resp func")
+	writer.Close()
 	return nil
 }
 
@@ -80,10 +81,13 @@ type StreamResp struct {
 	Index int `json:"index"`
 }
 
-func (s *SayHello) StreamFunc(ctx context.Context, total int, rw io.ReadWriter) error {
+func (s *SayHello) StreamFunc(ctx context.Context, total int, rw io.ReadWriteCloser) error {
 	log.Println("stream func ... ")
 	c := make(chan int)
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		reader := bufio.NewReader(rw)
 		for {
 			data, _, err := reader.ReadLine()
@@ -127,14 +131,15 @@ func (s *SayHello) StreamFunc(ctx context.Context, total int, rw io.ReadWriter) 
 			j--
 		}
 	}
-
+	rw.Close()
+	wg.Wait()
 	log.Println("end stream func")
 	return nil
 }
 
 func TestRunserver(t *testing.T) {
 	var i *ISayHello
-	server := zrpc.NewSvcMultiplexer(zrpc.DefaultNodeState, logrus.StandardLogger())
+	server := zrpc.NewSvcMultiplexer(zrpc.DefaultNodeState, &logger{})
 	err := zrpc.RegisterServer("sayhello/", &SayHello{}, i)
 	if err != nil {
 		t.Fatal(err)
@@ -377,6 +382,7 @@ func TestStreamRespFunc(t *testing.T) {
 		t.Fatal(err)
 	}
 	if data.Stage != zrpc.REPLY {
+		t.Log(data.Stage == zrpc.STREAM_END)
 		t.Fatal("unknow err")
 	}
 	t.Log(time.Since(now))
@@ -396,7 +402,7 @@ func TestStreamFunc(t *testing.T) {
 	defer soc.Close()
 	defer soc.Disconnect("tcp://127.0.0.1:8080")
 
-	//now := time.Now()
+	now := time.Now()
 	ctx := &zrpc.Context{
 		Context: context.Background(),
 	}
@@ -405,7 +411,7 @@ func TestStreamFunc(t *testing.T) {
 		panic(err)
 	}
 
-	number := 100
+	number := 1000
 	rawline, err := msgpack.Marshal(number)
 	if err != nil {
 		t.Fatal(err)
@@ -517,4 +523,6 @@ func TestStreamFunc(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
+	t.Log(time.Since(now))
+	time.Sleep(100 * time.Millisecond)
 }

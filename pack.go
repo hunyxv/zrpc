@@ -51,9 +51,9 @@ func (h Header) Has(key string) bool {
 }
 
 type Pack struct {
-	Identity string               `msgpack:"identity"`
-	Stage    string               `msgpack:"method"`
-	Header   Header               `msgpack:"head"`
+	Identity string   `msgpack:"identity"`
+	Stage    string   `msgpack:"method"`
+	Header   Header   `msgpack:"head"`
 	Args     [][]byte `msgpack:"args"`
 }
 
@@ -84,7 +84,7 @@ func (p *Pack) Marshal(args []interface{}) (pack []byte, err error) {
 		p.Set("message_id", NewMessageID())
 	}
 
-	if args != nil {
+	if len(args) != 0 {
 		for _, v := range args {
 			arg, err := msgpack.Marshal(&v)
 			if err != nil {

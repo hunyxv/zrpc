@@ -51,9 +51,9 @@ func NewSvcMultiplexer(nodeState *NodeState, logger Logger) *SvcMultiplexer {
 
 func (m *SvcMultiplexer) Reply(p *Pack) error {
 	switch p.Stage {
-	case REPLY, ERROR: // 应答
+	case REPLY, ERROR: // 只要应答（无论有无发生异常），方法的生命周期都应该算是结束了
 		msgid := p.Get(MESSAGEID)
-		//m.activeChannels.Delete(msgid)
+		m.activeChannels.Delete(msgid)
 		m.forward.Delete(msgid)
 		return m.broker.Reply(p)
 	case STREAM: // 流式响应
@@ -176,7 +176,7 @@ func (m *SvcMultiplexer) dispatcher() {
 					value, ok := m.forward.Load(msgid)
 					if !ok {
 						// 无处理节点，丢弃
-						m.logger.Warnf("stage%s: task processing node not found", STREAM_END)
+						m.logger.Warnf("stage %s: task processing node not found", STREAM_END)
 						continue
 					}
 					nodeid := value.(string)
@@ -186,63 +186,6 @@ func (m *SvcMultiplexer) dispatcher() {
 		}
 	}
 }
-
-// func (m *SvcMultiplexer) dispatcher2() {
-// 	for {
-// 		select {
-// 		case <-m.c:
-// 			return
-// 		case pack := <-m.broker.NewTask():
-// 			msgid := pack.Get(MESSAGEID)
-// 			if msgid == "" {
-// 				m.sendError(pack, ErrNoMessageID)
-// 				continue
-// 			}
-
-// 			// 是否在本节点
-// 			mfValue, ok := m.activeChannels.Load(msgid)
-// 			if !ok {
-// 				// 是否已经由本节点转发
-// 				mfValue, ok = m.forward.Load(msgid)
-// 				if !ok {
-// 					// 可能是个新的请求
-// 					// 本节点有空闲
-// 					if m.nodeState.isIdle() {
-// 						mf, err := m.rpc.GenerateExecFunc(pack.MethodName())
-// 						if err != nil {
-// 							m.sendError(pack, err)
-// 							continue
-// 						}
-// 						// 请求 -- 响应型
-// 						if mf.FuncMode() != ReqRep {
-// 							m.activeChannels.Store(msgid, mf)
-// 						}
-// 						m.submitTask(func() {
-// 							mf.Call(pack, m)
-// 						})
-// 						continue
-// 					} else {
-// 						n, err := m.SelectPeerNode()
-// 						if err != nil {
-// 							// 找不到其他空闲节点,就本节点处理
-// 							m.logger.Warnf("SvcMultiplexer: %v", err)
-// 							if err := m.do(msgid, pack); err != nil {
-// 								// 本地无法处理报错
-// 								m.logger.Errorf("SvcMultiplexer: %v", err)
-// 								m.sendError(pack, ErrSubmitTimeout)
-// 							}
-// 							continue
-// 						}
-// 						m.broker.ForwardToPeerNode(n.NodeID, pack) // 转发
-// 						m.forward.Store(msgid, n.NodeID)           // 保存消息和节点对应关系
-// 					}
-
-// 				}
-// 			}
-// 		}
-// 	}
-
-// }
 
 func (m *SvcMultiplexer) SelectPeerNode() (n Node, err error) {
 	nodes := m.broker.AllPeerNode()
@@ -287,7 +230,7 @@ func (m *activeMethodFuncs) Store(key interface{}, value interface{}) {
 			if value, ok := m.Map.LoadAndDelete(key); ok {
 				v := value.(*_Value)
 				if f, ok := v.v.(IMethodFunc); ok {
-					f.End()
+					f.Release()
 				}
 			}
 		}),

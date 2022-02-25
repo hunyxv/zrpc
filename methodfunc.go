@@ -19,6 +19,7 @@ type IMethodFunc interface {
 	Call(p *Pack, r IReply)
 	Next(params [][]byte)
 	End()
+	Release() error
 }
 
 type IReply interface {
@@ -44,14 +45,18 @@ var _ IMethodFunc = (*ReqRepFunc)(nil)
 
 // ReqRepFunc 请求应答类型函数
 type ReqRepFunc struct {
+	ctx    context.Context
+	cancel context.CancelFunc
 	id     string
 	Method *Method // function
 	reply  IReply
 }
 
 func NewReqRepFunc(m *Method) IMethodFunc {
-
+	ctx, cancel := context.WithCancel(context.Background())
 	return &ReqRepFunc{
+		ctx:    ctx,
+		cancel: cancel,
 		Method: m,
 	}
 }
@@ -64,7 +69,6 @@ func (f *ReqRepFunc) FuncMode() FuncMode {
 func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	f.reply = r
 	f.id = p.Identity
-	f.reply = r
 
 	if len(p.Args) != len(f.Method.paramTypes) {
 		f.reply.SendError(p, fmt.Errorf("not enough arguments in call to %s", f.Method.methodName))
@@ -81,10 +85,10 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	// 反序列化参数
 	paramsValue := make([]reflect.Value, len(p.Args))
 
-	var ctx = NewContext(context.Background())
+	var ctx = NewContext(f.ctx)
 	err := msgpack.Unmarshal(p.Args[0], ctx)
 	if err != nil {
-		log.Println("err: ", err)
+		log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 		f.reply.SendError(p, err)
 		return
 	}
@@ -95,6 +99,7 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 		fieldValue := reflect.New(fieldType)
 		err := msgpack.Unmarshal(p.Args[i], fieldValue.Interface())
 		if err != nil {
+			log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 			f.reply.SendError(p, err)
 			return
 		}
@@ -103,9 +108,13 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 
 	var rets [][]byte
 	result := f.Method.method.Call(paramsValue)
-
 	for _, item := range result[:len(result)-1] {
-		ret, _ := msgpack.Marshal(item.Interface())
+		ret, err := msgpack.Marshal(item.Interface())
+		if err != nil {
+			log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
+			f.reply.SendError(p, err)
+			return
+		}
 		rets = append(rets, ret)
 	}
 
@@ -130,18 +139,26 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 
 func (f *ReqRepFunc) Next([][]byte) {}
 func (f *ReqRepFunc) End()          {}
+func (f *ReqRepFunc) Release() error {
+	f.cancel()
+	return nil
+}
 
 // StreamReqRepFunc 流式请求类型函数
 type StreamReqRepFunc struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	id     string
-	header Header
+	req    *Pack
 	Method *Method // function
 	reply  IReply
-	buf    *bufio.ReadWriter
-	r      io.ReadCloser
-	w      io.WriteCloser
+
+	r   io.ReadCloser
+	w   io.WriteCloser
+	buf *bufio.ReadWriter
+
+	isClosed bool
+	lock     sync.Locker
 }
 
 func NewStreamReqRepFunc(m *Method) (IMethodFunc, error) {
@@ -155,10 +172,13 @@ func NewStreamReqRepFunc(m *Method) (IMethodFunc, error) {
 	return &StreamReqRepFunc{
 		ctx:    ctx,
 		cancel: cancel,
-		r:      readCloser,
-		w:      writerCloser,
-		buf:    buf,
 		Method: m,
+
+		r:   readCloser,
+		w:   writerCloser,
+		buf: buf,
+
+		lock: spinlock.NewSpinLock(),
 	}, nil
 }
 
@@ -169,7 +189,7 @@ func (srf *StreamReqRepFunc) FuncMode() FuncMode {
 func (srf *StreamReqRepFunc) Call(p *Pack, ireplye IReply) {
 	srf.id = p.Identity
 	srf.reply = ireplye
-	srf.header = p.Header
+	srf.req = p
 
 	if len(p.Args) != len(srf.Method.paramTypes) {
 		srf.reply.SendError(p, fmt.Errorf("not enough arguments in call to %s", srf.Method.methodName))
@@ -189,7 +209,7 @@ func (srf *StreamReqRepFunc) Call(p *Pack, ireplye IReply) {
 	var ctx = NewContext(srf.ctx)
 	err := msgpack.Unmarshal(p.Args[0], &ctx)
 	if err != nil {
-		log.Println("err: ", err)
+		log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 		srf.reply.SendError(p, err)
 		return
 	}
@@ -200,7 +220,7 @@ func (srf *StreamReqRepFunc) Call(p *Pack, ireplye IReply) {
 		fieldValue := reflect.New(fieldType)
 		err := msgpack.Unmarshal(p.Args[i], fieldValue.Interface())
 		if err != nil {
-			log.Println("err: ", err)
+			log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 			srf.reply.SendError(p, err)
 			return
 		}
@@ -244,8 +264,8 @@ func (srf *StreamReqRepFunc) Next(data [][]byte) {
 	var i int
 	for i != len(raw) {
 		n, err := srf.buf.Write(raw[i:])
-		if err != nil && err != io.EOF {
-			srf.reply.SendError(&Pack{Identity: srf.id, Header: srf.header}, err)
+		if err != nil {
+			srf.reply.SendError(srf.req, err)
 			return
 		}
 		i += n
@@ -253,19 +273,49 @@ func (srf *StreamReqRepFunc) Next(data [][]byte) {
 }
 
 func (srf *StreamReqRepFunc) End() {
-	srf.buf.Flush()
+	if err := srf.Release(); err != nil {
+		srf.reply.SendError(srf.req, err)
+	}
+}
+
+func (srf *StreamReqRepFunc) Release() error {
+	if srf.isClosed {
+		return nil
+	}
+
+	srf.lock.Lock()
+	defer srf.lock.Unlock()
+	if srf.isClosed {
+		return nil
+	}
+
+	srf.isClosed = true
+	err := srf.buf.Flush()
+	if err != nil {
+		srf.cancel()
+		return err
+	}
 	srf.cancel()
-	srf.w.Close()
+	return srf.w.Close()
+}
+
+type writeCloser struct {
+	*bufio.Writer
+	io.Closer
 }
 
 type ReqStreamRepFunc struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	id     string
-	header Header
+	req    *Pack
 	Method *Method // function
 	reply  IReply
-	writer *bufio.Writer
+
+	writeCloser *writeCloser
+
+	isClosed bool
+	lock     sync.Locker
 }
 
 func NewReqStreamRepFunc(m *Method) IMethodFunc {
@@ -274,9 +324,13 @@ func NewReqStreamRepFunc(m *Method) IMethodFunc {
 		ctx:    ctx,
 		cancel: cancel,
 		Method: m,
+		lock:   spinlock.NewSpinLock(),
 	}
 	writer := bufio.NewWriter(rsf)
-	rsf.writer = writer
+	rsf.writeCloser = &writeCloser{
+		Writer: writer,
+		Closer: rsf,
+	}
 	return rsf
 }
 
@@ -287,7 +341,7 @@ func (rsf *ReqStreamRepFunc) FuncMode() FuncMode {
 func (rsf *ReqStreamRepFunc) Call(p *Pack, r IReply) {
 	// 参数最后一个是 writer，只有一个err返回值
 	rsf.id = p.Identity
-	rsf.header = p.Header
+	rsf.req = p
 	rsf.reply = r
 	if len(p.Args) != len(rsf.Method.paramTypes) {
 		rsf.reply.SendError(p, fmt.Errorf("not enough arguments in call to %s", rsf.Method.methodName))
@@ -306,7 +360,7 @@ func (rsf *ReqStreamRepFunc) Call(p *Pack, r IReply) {
 	var ctx = NewContext(rsf.ctx)
 	err := msgpack.Unmarshal(p.Args[0], &ctx)
 	if err != nil {
-		log.Println("err: ", err)
+		log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 		rsf.reply.SendError(p, err)
 		return
 	}
@@ -317,14 +371,14 @@ func (rsf *ReqStreamRepFunc) Call(p *Pack, r IReply) {
 		fieldValue := reflect.New(fieldType)
 		err := msgpack.Unmarshal(p.Args[i], fieldValue.Interface())
 		if err != nil {
-			log.Println("err: ", err)
+			log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 			rsf.reply.SendError(p, err)
 			return
 		}
 		paramsValue[i] = fieldValue.Elem()
 	}
-	// 最后一个是 Writer
-	rwvalue := reflect.ValueOf(rsf.writer)
+	// 最后一个是 WriteCloser
+	rwvalue := reflect.ValueOf(rsf.writeCloser)
 	paramsValue[len(rsf.Method.paramTypes)-1] = rwvalue
 
 	var rets [][]byte
@@ -363,7 +417,7 @@ func (rsf *ReqStreamRepFunc) Call(p *Pack, r IReply) {
 func (rsf *ReqStreamRepFunc) Write(b []byte) (int, error) {
 	data := &Pack{
 		Identity: rsf.id,
-		Header:   rsf.header,
+		Header:   rsf.req.Header,
 		Stage:    STREAM,
 		Args:     [][]byte{b},
 	}
@@ -374,37 +428,57 @@ func (rsf *ReqStreamRepFunc) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (rsf *ReqStreamRepFunc) Close() error {
-	rsf.writer.Flush()
-	data := &Pack{
-		Identity: rsf.id,
-		Header:   rsf.header,
-		Stage:    STREAM_END,
-	}
-	return rsf.reply.Reply(data)
-}
-
 func (rsf *ReqStreamRepFunc) Next([][]byte) {}
 func (rsf *ReqStreamRepFunc) End()          {}
 
-type readWriter struct {
+func (rsf *ReqStreamRepFunc) Close() error {
+	return rsf.Release()
+}
+
+func (rsf *ReqStreamRepFunc) Release() error {
+	if rsf.isClosed {
+		return nil
+	}
+	rsf.lock.Lock()
+	defer rsf.lock.Unlock()
+	if rsf.isClosed {
+		return nil
+	}
+	rsf.isClosed = true
+	if err := rsf.writeCloser.Flush(); err != nil {
+		return err
+	}
+	data := &Pack{
+		Identity: rsf.id,
+		Header:   rsf.req.Header,
+		Stage:    STREAM_END,
+	}
+	defer rsf.cancel()
+	return rsf.reply.Reply(data)
+}
+
+type readWriteCloser struct {
 	io.Reader
 	io.Writer
+	io.Closer
 }
 
 type StreamFunc struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	id      string
-	header  Header
-	r       io.ReadCloser
-	w       io.WriteCloser
-	bufw    *bufio.Writer
-	rw      *readWriter
-	Method  *Method // function
-	reply   IReply
-	isClose bool
-	lock    sync.Locker
+	ctx    context.Context
+	cancel context.CancelFunc
+	Method *Method // function
+	reply  IReply
+	id     string
+	req    *Pack
+
+	r    io.ReadCloser
+	w    io.WriteCloser
+	bufw *bufio.Writer
+	rw   io.ReadWriteCloser
+
+	reqStreamIsEnd bool
+	isClose        bool
+	lock           sync.Locker
 }
 
 func NewStreamFunc(m *Method) (IMethodFunc, error) {
@@ -424,9 +498,10 @@ func NewStreamFunc(m *Method) (IMethodFunc, error) {
 		lock:   spinlock.NewSpinLock(),
 	}
 
-	sf.rw = &readWriter{
+	sf.rw = &readWriteCloser{
 		Reader: bufio.NewReader(readCloser),
 		Writer: sf, // 写入需要及时发送出去
+		Closer: sf,
 	}
 	return sf, nil
 }
@@ -438,7 +513,7 @@ func (sf *StreamFunc) FuncMode() FuncMode {
 func (sf *StreamFunc) Call(p *Pack, r IReply) {
 	// 参数最后一个是 writer，只有一个err返回值
 	sf.id = p.Identity
-	sf.header = p.Header
+	sf.req = p
 	sf.reply = r
 	if len(p.Args) != len(sf.Method.paramTypes) {
 		sf.reply.SendError(p, fmt.Errorf("not enough arguments in call to %s", sf.Method.methodName))
@@ -457,18 +532,17 @@ func (sf *StreamFunc) Call(p *Pack, r IReply) {
 	var ctx = NewContext(sf.ctx)
 	err := msgpack.Unmarshal(p.Args[0], &ctx)
 	if err != nil {
-		log.Println("err: ", err)
+		log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 		sf.reply.SendError(p, err)
 		return
 	}
 	paramsValue[0] = reflect.ValueOf(ctx)
-
 	for i := 1; i < len(sf.Method.paramTypes)-1; i++ {
 		fieldType := sf.Method.paramTypes[i]
 		fieldValue := reflect.New(fieldType)
 		err := msgpack.Unmarshal(p.Args[i], fieldValue.Interface())
 		if err != nil {
-			log.Println("err: ", err)
+			log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 			sf.reply.SendError(p, err)
 			return
 		}
@@ -518,7 +592,7 @@ func (sf *StreamFunc) Call(p *Pack, r IReply) {
 func (sf *StreamFunc) Write(b []byte) (int, error) {
 	data := &Pack{
 		Identity: sf.id,
-		Header:   sf.header,
+		Header:   sf.req.Header,
 		Stage:    STREAM,
 		Args:     [][]byte{b},
 	}
@@ -529,22 +603,13 @@ func (sf *StreamFunc) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (sf *StreamFunc) Close() error {
-	data := &Pack{
-		Identity: sf.id,
-		Header:   sf.header,
-		Stage:    STREAM_END,
-	}
-	return sf.reply.Reply(data)
-}
-
 func (sf *StreamFunc) Next(data [][]byte) {
 	raw := data[0]
 	var i int
 	for i != len(raw) {
 		n, err := sf.bufw.Write(raw[i:])
 		if err != nil && err != io.EOF {
-			sf.reply.SendError(&Pack{Identity: sf.id, Header: sf.header}, err)
+			sf.reply.SendError(sf.req, err)
 			return
 		}
 		i += n
@@ -555,11 +620,30 @@ func (sf *StreamFunc) Next(data [][]byte) {
 func (sf *StreamFunc) End() {
 	sf.lock.Lock()
 	defer sf.lock.Unlock()
-	if sf.isClose {
+	if sf.reqStreamIsEnd {
 		return
 	}
-	sf.isClose = true
+	sf.reqStreamIsEnd = true
 	sf.bufw.Flush()
 	sf.cancel()
 	sf.w.Close()
+}
+
+func (sf *StreamFunc) Close() error {
+	if sf.isClose {
+		return nil
+	}
+	sf.isClose = true
+	data := &Pack{
+		Identity: sf.id,
+		Header:   sf.req.Header,
+		Stage:    STREAM_END,
+	}
+	return sf.reply.Reply(data)
+}
+
+func (sf *StreamFunc) Release() error {
+	sf.End()
+	defer sf.cancel()
+	return sf.Close()
 }
