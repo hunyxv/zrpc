@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path"
@@ -180,7 +179,6 @@ func ScanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 
 	i := bytes.IndexByte(data, '\n')
 	if i > 0 {
-		fmt.Println(data)
 		if data[i-1] == '\r' {
 			return i + 1, dropCR(data[0:i]), nil
 		}

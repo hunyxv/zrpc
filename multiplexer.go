@@ -3,7 +3,6 @@ package zrpc
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/hunyxv/utils/timer"
 	"github.com/panjf2000/ants/v2"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 var _ IReply = (*SvcMultiplexer)(nil)
@@ -49,6 +49,11 @@ func NewSvcMultiplexer(nodeState *NodeState, logger Logger) *SvcMultiplexer {
 	return mux
 }
 
+// AddPeerNode 用于测试，后面删掉
+func (m *SvcMultiplexer) AddPeerNode(n *Node) {
+	m.broker.AddPeerNode(n)
+}
+
 func (m *SvcMultiplexer) Reply(p *Pack) error {
 	switch p.Stage {
 	case REPLY, ERROR: // 只要应答（无论有无发生异常），方法的生命周期都应该算是结束了
@@ -65,11 +70,12 @@ func (m *SvcMultiplexer) Reply(p *Pack) error {
 }
 
 func (m *SvcMultiplexer) SendError(pack *Pack, e error) {
+	errRaw, _ := msgpack.Marshal(e.Error())
 	errp := &Pack{
 		Identity: pack.Identity,
 		Header:   pack.Header,
 		Stage:    ERROR,
-		Args:     [][]byte{[]byte(e.Error())},
+		Args:     [][]byte{errRaw},
 	}
 	errp.SetMethodName(ERROR)
 	if err := m.Reply(errp); err != nil {
@@ -78,6 +84,9 @@ func (m *SvcMultiplexer) SendError(pack *Pack, e error) {
 }
 
 func (m *SvcMultiplexer) submitTask(f func()) error {
+	if m.nodeState.gpool == nil {
+		return ants.ErrPoolOverload
+	}
 	return m.nodeState.gpool.Submit(f)
 }
 
@@ -131,6 +140,8 @@ func (m *SvcMultiplexer) dispatcher() {
 					}
 				}
 
+				m.activeChannels.Delete(msgid)
+
 				// 转发给其他节点
 				n, err := m.SelectPeerNode()
 				if err != nil {
@@ -139,6 +150,7 @@ func (m *SvcMultiplexer) dispatcher() {
 					if err := m.do(msgid, pack); err != nil {
 						// 本地无法处理报错
 						m.logger.Errorf("SvcMultiplexer: %v", err)
+						m.activeChannels.Delete(msgid)
 						m.SendError(pack, ErrSubmitTimeout)
 					}
 					continue
@@ -167,7 +179,6 @@ func (m *SvcMultiplexer) dispatcher() {
 				mf, ok := m.activeChannels.LoadAndDelete(msgid)
 				if ok {
 					m.submitTask(func() {
-						fmt.Println("closed....")
 						if methodFunc, ok := mf.(IMethodFunc); ok {
 							methodFunc.End()
 						}
@@ -189,6 +200,11 @@ func (m *SvcMultiplexer) dispatcher() {
 
 func (m *SvcMultiplexer) SelectPeerNode() (n Node, err error) {
 	nodes := m.broker.AllPeerNode()
+	if len(nodes) == 0 {
+		err = errors.New("no idle nodes")
+		return
+	}
+
 	i := rand.Intn(len(nodes))
 	for j := 0; j < len(nodes); j++ {
 		if nodes[i].IsIdle {

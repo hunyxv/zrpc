@@ -37,9 +37,9 @@ func (h Header) Get(key string) string {
 }
 
 func (h Header) Pop(key string) string {
-	if _, ok := h[key]; ok {
-		value := h[key][len(h[key])-1]
-		h[key] = h[key][:len(h[key])-1]
+	if v, ok := h[key]; ok && len(v) > 0 {
+		value := v[len(h[key])-1]
+		h[key] = v[:len(h[key])-1]
 		return value
 	}
 	return ""

@@ -137,9 +137,47 @@ func (s *SayHello) StreamFunc(ctx context.Context, total int, rw io.ReadWriteClo
 	return nil
 }
 
-func TestRunserver(t *testing.T) {
+func TestRunserverIdle(t *testing.T) {
 	var i *ISayHello
+	zrpc.DefaultNodeState.NodeID = "11111111"
 	server := zrpc.NewSvcMultiplexer(zrpc.DefaultNodeState, &logger{})
+	server.AddPeerNode(&zrpc.Node{
+		ServiceName:     "222222",
+		NodeID:          "2222222",
+		LocalEndpoint:   "tcp://0.0.0.0:9080",
+		ClusterEndpoint: "tcp://0.0.0.0:9081",
+		StateEndpoint:   "tcp://0.0.0.0:9082",
+		IsIdle:          false,
+	})
+
+	err := zrpc.RegisterServer("sayhello/", &SayHello{}, i)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server.Run()
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	<-ch
+	server.Close()
+}
+
+func TestRunserverBusy(t *testing.T) {
+	var i *ISayHello
+	server := zrpc.NewSvcMultiplexer(&zrpc.NodeState{
+		Node: &zrpc.Node{
+			ServiceName:     "222222",
+			NodeID:          "2222222",
+			LocalEndpoint:   "tcp://0.0.0.0:9080",
+			ClusterEndpoint: "tcp://0.0.0.0:9081",
+			StateEndpoint:   "tcp://0.0.0.0:9082",
+			IsIdle:          false,
+		},
+	}, &logger{})
+
+	zrpc.DefaultNodeState.NodeID = "11111111"
+	server.AddPeerNode(zrpc.DefaultNodeState.Node)
+	t.Log(zrpc.DefaultNodeState.Node.ServiceName)
 	err := zrpc.RegisterServer("sayhello/", &SayHello{}, i)
 	if err != nil {
 		t.Fatal(err)
@@ -179,6 +217,13 @@ func TestRunclient(t *testing.T) {
 		panic(err)
 	}
 	soc.SetIdentity(id)
+	err = soc.Connect("tcp://127.0.0.1:9080")
+	if err != nil {
+		panic(err)
+	}
+	defer soc.Close()
+	defer soc.Disconnect("tcp://127.0.0.1:9080")
+
 	err = soc.Connect("tcp://127.0.0.1:8080")
 	if err != nil {
 		panic(err)
@@ -215,6 +260,13 @@ func TestRunclient(t *testing.T) {
 		}
 		t.Log(result)
 
+		if result.Stage == zrpc.ERROR {
+			var e string
+			msgpack.Unmarshal(result.Args[0], &e)
+			t.Logf("ERR: %s", errors.New(e))
+			return
+		}
+
 		var world string
 		msgpack.Unmarshal(result.Args[0], &world)
 		var e string
@@ -231,12 +283,12 @@ func TestStreamReqFunc(t *testing.T) {
 		panic(err)
 	}
 	soc.SetIdentity(id)
-	err = soc.Connect("tcp://127.0.0.1:8080")
+	err = soc.Connect("tcp://127.0.0.1:9080")
 	if err != nil {
 		panic(err)
 	}
 	defer soc.Close()
-	defer soc.Disconnect("tcp://127.0.0.1:8080")
+	defer soc.Disconnect("tcp://127.0.0.1:9080")
 
 	now := time.Now()
 	ctx := &zrpc.Context{
@@ -312,12 +364,12 @@ func TestStreamRespFunc(t *testing.T) {
 		panic(err)
 	}
 	soc.SetIdentity(id)
-	err = soc.Connect("tcp://127.0.0.1:8080")
+	err = soc.Connect("tcp://127.0.0.1:9080")
 	if err != nil {
 		panic(err)
 	}
 	defer soc.Close()
-	defer soc.Disconnect("tcp://127.0.0.1:8080")
+	defer soc.Disconnect("tcp://127.0.0.1:9080")
 
 	now := time.Now()
 	ctx := &zrpc.Context{
@@ -395,12 +447,12 @@ func TestStreamFunc(t *testing.T) {
 		panic(err)
 	}
 	soc.SetIdentity(id)
-	err = soc.Connect("tcp://127.0.0.1:8080")
+	err = soc.Connect("tcp://127.0.0.1:9080")
 	if err != nil {
 		panic(err)
 	}
 	defer soc.Close()
-	defer soc.Disconnect("tcp://127.0.0.1:8080")
+	defer soc.Disconnect("tcp://127.0.0.1:9080")
 
 	now := time.Now()
 	ctx := &zrpc.Context{

@@ -130,6 +130,7 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 
 	resp := &Pack{
 		Identity: p.Identity,
+		Header:   p.Header,
 		Stage:    REPLY,
 		Args:     rets,
 	}
@@ -415,9 +416,15 @@ func (rsf *ReqStreamRepFunc) Call(p *Pack, r IReply) {
 }
 
 func (rsf *ReqStreamRepFunc) Write(b []byte) (int, error) {
+	var header = make(Header, len(rsf.req.Header))
+	for k, v := range rsf.req.Header {
+		for _, i := range v {
+			header.Set(k, i)
+		}
+	}
 	data := &Pack{
 		Identity: rsf.id,
-		Header:   rsf.req.Header,
+		Header:   header,
 		Stage:    STREAM,
 		Args:     [][]byte{b},
 	}
@@ -448,9 +455,16 @@ func (rsf *ReqStreamRepFunc) Release() error {
 	if err := rsf.writeCloser.Flush(); err != nil {
 		return err
 	}
+
+	var header = make(Header, len(rsf.req.Header))
+	for k, v := range rsf.req.Header {
+		for _, i := range v {
+			header.Set(k, i)
+		}
+	}
 	data := &Pack{
 		Identity: rsf.id,
-		Header:   rsf.req.Header,
+		Header:   header,
 		Stage:    STREAM_END,
 	}
 	defer rsf.cancel()
@@ -590,9 +604,15 @@ func (sf *StreamFunc) Call(p *Pack, r IReply) {
 }
 
 func (sf *StreamFunc) Write(b []byte) (int, error) {
+	var header = make(Header, len(sf.req.Header))
+	for k, v := range sf.req.Header {
+		for _, i := range v {
+			header.Set(k, i)
+		}
+	}
 	data := &Pack{
 		Identity: sf.id,
-		Header:   sf.req.Header,
+		Header:   header,
 		Stage:    STREAM,
 		Args:     [][]byte{b},
 	}
@@ -633,10 +653,17 @@ func (sf *StreamFunc) Close() error {
 	if sf.isClose {
 		return nil
 	}
+
+	var header = make(Header, len(sf.req.Header))
+	for k, v := range sf.req.Header {
+		for _, i := range v {
+			header.Set(k, i)
+		}
+	}
 	sf.isClose = true
 	data := &Pack{
 		Identity: sf.id,
-		Header:   sf.req.Header,
+		Header:   header,
 		Stage:    STREAM_END,
 	}
 	return sf.reply.Reply(data)

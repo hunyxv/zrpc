@@ -2,6 +2,7 @@ package zrpc
 
 import (
 	"context"
+	"log"
 	"runtime"
 	"strconv"
 	"sync"
@@ -213,13 +214,8 @@ func (b *broker) Run() {
 			// 来自客户端的心跳交由上层处理
 			b.taskChan <- pack
 		case raws := <-b.clusterfe.Recv(): // 来自其他节点转发过来的数据
-			// msgfrom := string(raws[0])
 			var pack *Pack
 			msgpack.Unmarshal(raws[1], &pack)
-			// ttlStr := pack.Get(TTL)
-			// ttl, _ := strconv.Atoi(ttlStr) // 跳数超没超过限制上层来决定
-			// pack.Header.Set(TTL, strconv.Itoa(ttl))
-			// pack.Header.Add(PACKPATH, msgfrom)
 			b.taskChan <- pack // 跳数超没超过限制上层来决定
 		case raws := <-b.clusterbe.Recv(): // 开始接收后端数据(返回的结果)
 			var pack *Pack
@@ -263,7 +259,7 @@ type peerNodeManager struct {
 }
 
 func newPeerNodeManager(state *NodeState, hbInterval time.Duration) (*peerNodeManager, error) {
-	clusterfe, err := newSocket(state.NodeID, zmq.DEALER, frontend, state.ClusterEndpoint)
+	clusterfe, err := newSocket(state.NodeID, zmq.ROUTER, frontend, state.ClusterEndpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +348,7 @@ func (peer *peerNodeManager) ForwardToPeerNode(to string, pack *Pack) {
 
 	pack.Header.Set(TTL, strconv.Itoa(ttl+1)) // 跳数+1
 	pack.Header.Add(PACKPATH, peer.NodeState.NodeID)
-
+	log.Printf("转发消息，to: %s, data  %+v", to, pack)
 	b, _ := msgpack.Marshal(pack)
 	peer.clusterbe.Send() <- [][]byte{[]byte(to), b}
 }

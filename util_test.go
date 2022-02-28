@@ -135,3 +135,7 @@ func TestRWChanel2(t *testing.T) {
 	rw.Close()
 	time.Sleep(time.Second)
 }
+
+func TestGetServerName(t *testing.T){
+	t.Log(getServerName())
+}

@@ -2,6 +2,8 @@ package testdata
 
 import (
 	"testing"
+
+	"github.com/hunyxv/zrpc"
 )
 
 type Item struct {
@@ -15,4 +17,9 @@ func TestPackReq(t *testing.T) {
 
 func TestPackResp(t *testing.T) {
 
+}
+
+
+func TestGetServerName(t *testing.T){
+	t.Log(zrpc.DefaultNodeState.Node.ServiceName)
 }
