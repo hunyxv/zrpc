@@ -123,7 +123,6 @@ func (s *SayHello) StreamFunc(ctx context.Context, total int, rw io.ReadWriteClo
 			}
 			data = append(data, '\r', '\n')
 			rw.Write(data)
-			//rw.Write([]byte{'\n'})
 		}
 
 		for j != 0 {
@@ -137,53 +136,46 @@ func (s *SayHello) StreamFunc(ctx context.Context, total int, rw io.ReadWriteClo
 	return nil
 }
 
+// 空闲服务
 func TestRunserverIdle(t *testing.T) {
 	var i *ISayHello
-	zrpc.DefaultNodeState.NodeID = "11111111"
-	server := zrpc.NewSvcMultiplexer(zrpc.DefaultNodeState, &logger{})
-	server.AddPeerNode(&zrpc.Node{
-		ServiceName:     "222222",
-		NodeID:          "2222222",
-		LocalEndpoint:   "tcp://0.0.0.0:9080",
-		ClusterEndpoint: "tcp://0.0.0.0:9081",
-		StateEndpoint:   "tcp://0.0.0.0:9082",
-		IsIdle:          false,
-	})
-
 	err := zrpc.RegisterServer("sayhello/", &SayHello{}, i)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 为了测试，节点 id 设置为 111...
+	zrpc.DefaultNodeState.NodeID = "11111111-1111-1111-1111-111111111111"
 
-	server.Run()
+	go zrpc.Run()
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch
-	server.Close()
+	zrpc.Close()
 }
 
+// 满载服务
 func TestRunserverBusy(t *testing.T) {
+	rpcInstance := zrpc.NewRPCInstance()
 	var i *ISayHello
 	server := zrpc.NewSvcMultiplexer(&zrpc.NodeState{
 		Node: &zrpc.Node{
 			ServiceName:     "222222",
-			NodeID:          "2222222",
+			NodeID:          "22222222-2222-2222-2222-222222222222", // 为了测试，节点 id 设置为 222...
 			LocalEndpoint:   "tcp://0.0.0.0:9080",
 			ClusterEndpoint: "tcp://0.0.0.0:9081",
 			StateEndpoint:   "tcp://0.0.0.0:9082",
-			IsIdle:          false,
+			IsIdle:          false, // 表示本节点已经满载了
 		},
-	}, &logger{})
-
-	zrpc.DefaultNodeState.NodeID = "11111111"
-	server.AddPeerNode(zrpc.DefaultNodeState.Node)
+	}, &logger{}, rpcInstance)
+	zrpc.DefaultNodeState.NodeID = "11111111-1111-1111-1111-111111111111"
+	server.AddPeerNode(zrpc.DefaultNodeState.Node) // 添加上面那个空闲节点
 	t.Log(zrpc.DefaultNodeState.Node.ServiceName)
-	err := zrpc.RegisterServer("sayhello/", &SayHello{}, i)
+	err := rpcInstance.RegisterServer("sayhello/", &SayHello{}, i)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	server.Run()
+	go server.Run()
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch
@@ -210,7 +202,7 @@ func client(soc *zmq.Socket, pack *zrpc.Pack) [][]byte {
 	return msg
 }
 
-func TestRunclient(t *testing.T) {
+func TestReqRepFunc(t *testing.T) {
 	id := "test-client" + fmt.Sprintf("%d", time.Now().UnixNano())
 	soc, err := zmq.NewSocket(zmq.DEALER)
 	if err != nil {

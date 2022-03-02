@@ -22,7 +22,7 @@ type command string
 const (
 	_CLOSE       = command("close")       // 关闭所有连接
 	_CONNECT     = command("connect")     // 新连接
-	_DISCONNECT  = command("disconnect")  // 断开到某个断点的连接
+	_DISCONNECT  = command("disconnect")  // 断开到某个端点的连接
 	_SUBSCRIBE   = command("subscribe")   // 订阅某topic
 	_UNSUBSCRIBE = command("unsubscribe") // 取消订阅
 )
@@ -49,6 +49,9 @@ func newSocket(id string, t zmq.Type, mode socMode, endpoint string) (*socket, e
 		return nil, err
 	}
 	soc.SetIdentity(id)
+	soc.SetTcpKeepalive(1)       // 启用 keepalive
+	soc.SetTcpKeepaliveIdle(120) // 空闲间隔 120s
+
 	if mode == frontend {
 		if t != zmq.SUB { // zmq.sub 特别处理，前端表示接收数据，zmq.SUB 是订阅接收不用 Bind
 			err := soc.Bind(endpoint)

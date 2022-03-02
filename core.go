@@ -51,11 +51,12 @@ type Server struct {
 	instance   reflect.Value      // server 实例
 }
 
+// RPCInstance 保存管理 rpc 实例
 type RPCInstance struct {
 	servers map[string]*Server // server name : server
 }
 
-func newRPCInstance() *RPCInstance {
+func NewRPCInstance() *RPCInstance {
 	return &RPCInstance{
 		servers: make(map[string]*Server),
 	}

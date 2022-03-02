@@ -8,15 +8,6 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-var DefaultNodeState, _ = NewNodeState(&Node{
-	ServiceName:     getServerName(),
-	NodeID:          "",
-	LocalEndpoint:   "tcp://0.0.0.0:8080",
-	ClusterEndpoint: "tcp://0.0.0.0:8081",
-	StateEndpoint:   "tcp://0.0.0.0:8082",
-	IsIdle:          true,
-}, 1000)
-
 // Node 节点信息
 type Node struct {
 	ServiceName     string `json:"service_name" msgpack:"service_name"`

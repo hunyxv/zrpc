@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hunyxv/utils/timer"
+	"github.com/pborman/uuid"
 )
 
 func TestMyMap(t *testing.T) {
@@ -138,4 +139,5 @@ func TestRWChanel2(t *testing.T) {
 
 func TestGetServerName(t *testing.T){
 	t.Log(getServerName())
+	t.Log(string(uuid.NewUUID()))
 }

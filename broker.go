@@ -2,7 +2,6 @@ package zrpc
 
 import (
 	"context"
-	"log"
 	"runtime"
 	"strconv"
 	"sync"
@@ -40,7 +39,16 @@ var (
 		DISCONNECT: "DISCONNECT",
 		ERROR:      "ERROR",
 	}
+
+	hbPacketWithNodeState []byte
+	hbPacket              []byte
 )
+
+func init() {
+	hbPacket, _ = msgpack.Marshal(&Pack{
+		Header: Header{METHOD_NAME: []string{HEARTBEAT}},
+	})
+}
 
 type mode int
 
@@ -101,20 +109,28 @@ type broker struct {
 }
 
 func NewBroker(state *NodeState, hbInterval time.Duration, logger Logger) (Broker, error) {
-	ctx, cancel := context.WithCancel(context.Background())
 	manager, err := newPeerNodeManager(state, hbInterval)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
 
 	localfe, err := newSocket(state.NodeID, zmq.ROUTER, frontend, state.LocalEndpoint)
 	if err != nil {
 		manager.Close()
-		cancel()
 		return nil, err
 	}
 
+	nodeSate, err := msgpack.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	heartbeatPacket := &Pack{
+		Args: [][]byte{nodeSate},
+	}
+	heartbeatPacket.SetMethodName(HEARTBEAT)
+	hbPacketWithNodeState, _ = msgpack.Marshal(heartbeatPacket)
+
+	ctx, cancel := context.WithCancel(context.Background())
 	return &broker{
 		peerNodeManager: manager,
 
@@ -160,34 +176,20 @@ func (b *broker) Run() {
 		case <-b.ctx.Done():
 			return
 		case <-tick.C: // 发送心跳包
-			heartbeat := &Pack{
-				Identity: b.NodeState.NodeID,
-			}
-			heartbeat.SetMethodName(HEARTBEAT)
-			raw, _ := msgpack.Marshal(heartbeat)
-			b.statebe.sendChan <- [][]byte{raw}
-			b.lock.Lock()
 			for _, nodeState := range b.peerState {
+				b.clusterbe.Send() <- [][]byte{[]byte(nodeState.NodeID), hbPacketWithNodeState}
 				// 超时了断开到该节点的连接
 				// 如果后面还收到了该节点转发的请求，那么重新连接即可
 				if time.Until(nodeState.expiration) < 0 {
 					b.DelPeerNode(nodeState.Node)
 				}
 			}
-			b.lock.Unlock()
 		case raws := <-b.statefe.Recv(): // 订阅的消息
 			var pack *Pack
 			msgpack.Unmarshal(raws[0], &pack)
 			msgfrom := pack.Identity
 			switch pack.MethodName() {
-			case HEARTBEAT: // 收到的心跳包，更新节点的过期时间
-				b.lock.Lock()
-				if state, ok := b.peerState[msgfrom]; ok {
-					state.expiration = time.Now().Add(b.hbInterval * 3)
-					b.logger.Debugf("'%s': heartbeat, expiration: %v", msgfrom, state.expiration)
-				}
-				b.lock.Unlock()
-			case SYNCSTATE:
+			case SYNCSTATE: // 收到节点状态广播
 				var node *Node
 				if err := msgpack.Unmarshal(pack.Args[0], &node); err != nil {
 					b.logger.Errorf("msgpack unmarshal err: %v", err)
@@ -202,21 +204,50 @@ func (b *broker) Run() {
 					b.lock.Unlock()
 					b.AddPeerNode(node)
 				}
+			default:
+				b.logger.Warnf("unknow packet: %+v", pack)
 			}
 		case raws := <-b.localfe.Recv(): // 本地客户端的请求
-			msgfrom := string(raws[0])
+			msgfrom := raws[0]
 			var pack *Pack
 			msgpack.Unmarshal(raws[1], &pack)
-			if pack.Identity != msgfrom {
-				b.logger.Warnf("pack.id: %s, from: %s", pack.Identity, msgfrom)
+
+			switch pack.MethodName() {
+			case HEARTBEAT: // 来自客户端的心跳包, 然后返回 心跳
+				b.localfe.Send() <- [][]byte{msgfrom, hbPacket}
 				continue
+			default:
+				if pack.Identity != string(msgfrom) {
+					b.logger.Warnf("pack.id: %s, from: %s", pack.Identity, string(msgfrom))
+					continue
+				}
+				b.taskChan <- pack
 			}
-			// 来自客户端的心跳交由上层处理
-			b.taskChan <- pack
-		case raws := <-b.clusterfe.Recv(): // 来自其他节点转发过来的数据
+		case raws := <-b.clusterfe.Recv(): // 来自其他节点发过来的数据
+			msgfrom := raws[0]
 			var pack *Pack
 			msgpack.Unmarshal(raws[1], &pack)
-			b.taskChan <- pack // 跳数超没超过限制上层来决定
+
+			switch pack.MethodName() {
+			case HEARTBEAT: // 心跳包
+				b.logger.Debugf("[heartbeat]: from '%s'", msgfrom)
+				b.lock.Lock()
+				if state, ok := b.peerState[string(msgfrom)]; ok {
+					state.expiration = time.Now().Add(b.hbInterval * 3)
+					b.lock.Unlock()
+				} else {
+					b.lock.Unlock()
+					var node *Node
+					if err := msgpack.Unmarshal(pack.Args[0], &node); err != nil {
+						b.logger.Errorf("msgpack.Unmarshal fail: %v", err)
+						continue
+					}
+					b.AddPeerNode(node)
+				}
+
+			default:
+				b.taskChan <- pack // 跳数超没超过限制上层来决定
+			}
 		case raws := <-b.clusterbe.Recv(): // 开始接收后端数据(返回的结果)
 			var pack *Pack
 			msgpack.Unmarshal(raws[1], &pack)
@@ -244,6 +275,7 @@ func (b *broker) Close(clis []string) {
 	b.cancel()
 	b.localfe.Close()
 	b.peerNodeManager.Close()
+	time.Sleep(3 * time.Second)
 }
 
 type peerNodeManager struct {
@@ -348,7 +380,6 @@ func (peer *peerNodeManager) ForwardToPeerNode(to string, pack *Pack) {
 
 	pack.Header.Set(TTL, strconv.Itoa(ttl+1)) // 跳数+1
 	pack.Header.Add(PACKPATH, peer.NodeState.NodeID)
-	log.Printf("转发消息，to: %s, data  %+v", to, pack)
 	b, _ := msgpack.Marshal(pack)
 	peer.clusterbe.Send() <- [][]byte{[]byte(to), b}
 }

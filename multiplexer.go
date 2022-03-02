@@ -26,7 +26,7 @@ type SvcMultiplexer struct {
 	c              chan int
 }
 
-func NewSvcMultiplexer(nodeState *NodeState, logger Logger) *SvcMultiplexer {
+func NewSvcMultiplexer(nodeState *NodeState, logger Logger, rpc *RPCInstance) *SvcMultiplexer {
 	broker, err := NewBroker(nodeState, 5*time.Second, logger)
 	if err != nil {
 		panic(err)
@@ -41,7 +41,7 @@ func NewSvcMultiplexer(nodeState *NodeState, logger Logger) *SvcMultiplexer {
 		activeChannels: newActiveMethodFuncs(t),
 		nodeState:      nodeState,
 		broker:         broker,
-		rpc:            DefaultRPCInstance,
+		rpc:            rpc,
 		timer:          t,
 		forward:        newMyMap(t),
 		c:              make(chan int),
