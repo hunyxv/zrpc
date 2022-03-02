@@ -32,7 +32,7 @@ func NewSvcMultiplexer(nodeState *NodeState, logger Logger, rpc *RPCInstance) *S
 		panic(err)
 	}
 
-	t, err := timer.NewHashedWheelTimer(context.Background(), timer.WithWorkPool(nodeState.gpool))
+	t, err := timer.NewHashedWheelTimer(context.Background(), timer.WithWorkPool(goroutinePool))
 	if err != nil {
 		panic(err)
 	}
@@ -84,10 +84,10 @@ func (m *SvcMultiplexer) SendError(pack *Pack, e error) {
 }
 
 func (m *SvcMultiplexer) submitTask(f func()) error {
-	if m.nodeState.gpool == nil {
+	if goroutinePool == nil {
 		return ants.ErrPoolOverload
 	}
-	return m.nodeState.gpool.Submit(f)
+	return goroutinePool.Submit(f)
 }
 
 func (m *SvcMultiplexer) do(msgid string, pack *Pack) error {

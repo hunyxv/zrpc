@@ -12,7 +12,7 @@ var DefaultNodeState, _ = NewNodeState(&Node{
 	ClusterEndpoint: "tcp://0.0.0.0:8081",
 	StateEndpoint:   "tcp://0.0.0.0:8082",
 	IsIdle:          true,
-}, 1000)
+}, 0)
 
 var (
 	defaultLogger Logger
@@ -40,7 +40,7 @@ func RegisterServer(name string, server interface{}, conventions interface{}) er
 // SetWorkPoolSize 设置工作池大小（默认无限大）
 func SetWorkPoolSize(size int) (err error) {
 	if goroutinePool == nil {
-		goroutinePool, err = ants.NewPool(size)
+		goroutinePool, err = ants.NewPool(size, ants.WithNonblocking(true))
 		return
 	}
 	goroutinePool.Tune(size)
@@ -63,11 +63,7 @@ func Run() error {
 		defaultRPCInstance = NewRPCInstance()
 	}
 
-	svcMultiplexer = NewSvcMultiplexer(&NodeState{
-		Node:  DefaultNodeState.Node,
-		gpool: goroutinePool,
-	}, defaultLogger, defaultRPCInstance)
-
+	svcMultiplexer = NewSvcMultiplexer(DefaultNodeState, defaultLogger, defaultRPCInstance)
 	svcMultiplexer.Run()
 	return nil
 }

@@ -4,7 +4,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/panjf2000/ants/v2"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -29,19 +28,21 @@ type Node struct {
 type NodeState struct {
 	*Node
 
-	gpool      *ants.Pool
+	isSelf     bool
 	flag       int32     // 暂停工作
 	expiration time.Time // 过期时间，通过心跳来更新
 }
 
-func NewNodeState(node *Node, gpoolSize int) (*NodeState, error) {
-	pool, err := ants.NewPool(gpoolSize, ants.WithNonblocking(true))
-	if err != nil {
-		return nil, err
+func NewNodeState(node *Node, workPoolSize int) (*NodeState, error) {
+	if goroutinePool == nil {
+		if err := SetWorkPoolSize(workPoolSize); err != nil {
+			return nil, err
+		}
 	}
+
 	return &NodeState{
-		Node:  node,
-		gpool: pool,
+		Node:   node,
+		isSelf: true,
 	}, nil
 }
 
@@ -59,9 +60,9 @@ func (s *NodeState) isPausing() bool {
 
 func (s *NodeState) isIdle() bool {
 	// 本节点
-	if s.gpool != nil {
+	if s.isSelf {
 		// 本节点负载大于 80% 不再接收其他节点任务
-		return float64(s.gpool.Running())/float64(s.gpool.Cap()) <= 0.9
+		return float64(goroutinePool.Running())/float64(goroutinePool.Cap()) <= 0.8
 	}
 
 	// 平行节点
