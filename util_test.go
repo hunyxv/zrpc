@@ -18,7 +18,7 @@ func TestMyMap(t *testing.T) {
 	timerWheel, _ := timer.NewHashedWheelTimer(context.Background())
 	go timerWheel.Start()
 	defer timerWheel.Stop()
-	m := newMyMap(timerWheel)
+	m := newMyMap(timerWheel, 10 * time.Second)
 	m.Store("testkey1", "aaaaaa")
 
 	v, ok := m.Load("testkey")
@@ -137,7 +137,7 @@ func TestRWChanel2(t *testing.T) {
 	time.Sleep(time.Second)
 }
 
-func TestGetServerName(t *testing.T){
+func TestGetServerName(t *testing.T) {
 	t.Log(getServerName())
 	t.Log(string(uuid.NewUUID()))
 }

@@ -2,45 +2,81 @@ package zrpc
 
 import (
 	"context"
+	"log"
 
 	"github.com/vmihailenco/msgpack/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
-type contextKey string
+type zrpcContextKey string
+
+const (
+	// 关于链路追踪的数据
+	TracePayloadKey zrpcContextKey = "__trace_ctx__"
+	// 其他数据
+	PayloadKey zrpcContextKey = "__ctx__"
+)
 
 // Context 上下文信息
 //   思路：几个固定字段作为上下文信息，比如超时时间、环境变量、链路追踪等
 type Context struct {
 	context.Context
-	//Payload  string `msgpack:"payload" json:"payload"`
+	//Payload  map `msgpack:"payload" json:"payload"`
 }
 
 func NewContext(ctx context.Context) *Context {
 	return &Context{
 		Context: ctx,
-
 	}
 }
 
-// func (ctx *Context) MarshalMsgpack()([]byte, error){
-// 	return msgpack.Marshal(&ctx)
-// }
+func (ctx *Context) MarshalMsgpack() ([]byte, error) {
+	payload := make(map[zrpcContextKey]interface{}, 2)
+	if data := ctx.Value(TracePayloadKey); !isNil(data) {
+		payload[TracePayloadKey] = data
+	}
+	if data := ctx.Value(PayloadKey); !isNil(data) {
+		payload[PayloadKey] = data
+	}
+
+	return msgpack.Marshal(payload)
+}
 
 func (ctx *Context) UnmarshalMsgpack(b []byte) error {
-	//msgpack.Unmarshal(b, &ctx)
-	var m map[string]interface{} 
-	msgpack.Unmarshal(b, &m)
-	ctx.Context = context.WithValue(ctx.Context, contextKey("_key_"), m)
+	if ctx.Context == nil {
+		ctx.Context = context.Background()
+	}
+	if len(b) > 0 {
+		var m map[zrpcContextKey]interface{}
+		if err := msgpack.Unmarshal(b, &m); err != nil {
+			return err
+		}
+
+		for k, v := range m {
+			ctx.Context = context.WithValue(ctx.Context, k, v)
+		}
+	}
 	return nil
 }
 
-// func (ctx *Context) MarshalJSON() ([]byte, error) {
-// 	return []byte("{}"), nil
-// }
+// InjectTrace2ctx 提取链路追中上下文信息，并注入到新的 context 中
+func InjectTrace2ctx(ctx context.Context, spanContext trace.SpanContext) context.Context {
+	t := ctx.Value(TracePayloadKey)
+	var payload map[string]string
+	if !isNil(t) {
+		if data, ok := t.(map[string]string); ok {
+			payload = data
+		} else {
+			payload = make(map[string]string)
+		}
+	} else {
+		payload = map[string]string{}
+	}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(payload))
+	log.Println(payload)
 
-// func (ctx *Context)  UnmarshalJSON(b []byte) error {
-// 	var m map[string]interface{} 
-// 	msgpack.Unmarshal(b, &m)
-// 	ctx.Context = context.WithValue(ctx.Context, contextKey("_key_"), m)
-// 	return nil
-// }
+	valueCtx := context.WithValue(ctx, TracePayloadKey, payload)
+	return valueCtx
+}

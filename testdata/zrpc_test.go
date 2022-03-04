@@ -144,7 +144,7 @@ func TestRunserverIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 为了测试，节点 id 设置为 111...
-	zrpc.DefaultNodeState.NodeID = "11111111-1111-1111-1111-111111111111"
+	zrpc.DefaultNode.NodeID = "11111111-1111-1111-1111-111111111111"
 
 	go zrpc.Run()
 	ch := make(chan os.Signal, 1)
@@ -157,19 +157,17 @@ func TestRunserverIdle(t *testing.T) {
 func TestRunserverBusy(t *testing.T) {
 	rpcInstance := zrpc.NewRPCInstance()
 	var i *ISayHello
-	server := zrpc.NewSvcMultiplexer(&zrpc.NodeState{
-		Node: &zrpc.Node{
-			ServiceName:     "222222",
-			NodeID:          "22222222-2222-2222-2222-222222222222", // 为了测试，节点 id 设置为 222...
-			LocalEndpoint:   "tcp://0.0.0.0:9080",
-			ClusterEndpoint: "tcp://0.0.0.0:9081",
-			StateEndpoint:   "tcp://0.0.0.0:9082",
-			IsIdle:          false, // 表示本节点已经满载了
-		},
-	}, &logger{}, rpcInstance)
-	zrpc.DefaultNodeState.NodeID = "11111111-1111-1111-1111-111111111111"
-	server.AddPeerNode(zrpc.DefaultNodeState.Node) // 添加上面那个空闲节点
-	t.Log(zrpc.DefaultNodeState.Node.ServiceName)
+	server := zrpc.NewSvcMultiplexer(rpcInstance, zrpc.WithLogger(&logger{}), zrpc.WithNodeInfo(zrpc.Node{
+		ServiceName:     "222222",
+		NodeID:          "22222222-2222-2222-2222-222222222222", // 为了测试，节点 id 设置为 222...
+		LocalEndpoint:   "tcp://0.0.0.0:9080",
+		ClusterEndpoint: "tcp://0.0.0.0:9081",
+		StateEndpoint:   "tcp://0.0.0.0:9082",
+		IsIdle:          false, // 表示本节点已经满载了
+	}))
+	zrpc.DefaultNode.NodeID = "11111111-1111-1111-1111-111111111111"
+	server.AddPeerNode(&zrpc.DefaultNode) // 添加上面那个空闲节点
+	t.Log(zrpc.DefaultNode.ServiceName)
 	err := rpcInstance.RegisterServer("sayhello/", &SayHello{}, i)
 	if err != nil {
 		t.Fatal(err)

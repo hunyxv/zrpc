@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"math/rand"
 	"os"
 	"path"
+	"reflect"
 	"sync"
 	"time"
 
@@ -18,23 +20,27 @@ import (
 var origin int64
 
 func init() {
-	start, err := time.ParseInLocation("2006-01-02 15:04:05", "2021-11-17 11:47:00", time.Local)
+	start, err := time.ParseInLocation("2006-01-02 15:04:05", "2022-03-03 12:00:00", time.Local)
 	if err != nil {
 		panic(err)
 	}
 	origin = start.UnixNano() / int64(time.Millisecond)
 }
 
+// NewMessageID 生成消息ID，前5字节是时间戳(ms)，后11字节是随机数
 func NewMessageID() (id string) {
-	now := time.Now().UnixNano()/int64(time.Millisecond) - origin
-	_uuid := uuid.NewRandom().Array()
+	now := time.Now().UnixMilli() - origin
 	idPrefix := bytes.NewBuffer([]byte{})
 	binary.Write(idPrefix, binary.BigEndian, now)
-	var _id [27]byte
+	var _id = make([]byte, 32)
 	hex.Encode(_id[:], idPrefix.Bytes()[3:])
-	_id[10] = '-'
-	hex.Encode(_id[11:], _uuid[8:])
-	return string(_id[:])
+	random := make([]byte, 11)
+	if _, err := rand.Read(random); err != nil {
+		_uuid := uuid.NewRandom().Array()
+		random = _uuid[5:]
+	}
+	hex.Encode(_id[10:], random)
+	return string(_id)
 }
 
 type _Value struct {
@@ -44,19 +50,21 @@ type _Value struct {
 
 type myMap struct {
 	sync.Map
-	timer *timer.HashedWheelTimer
+	timeoutPeriod time.Duration
+	timer         *timer.HashedWheelTimer
 }
 
-func newMyMap(t *timer.HashedWheelTimer) *myMap {
+func newMyMap(t *timer.HashedWheelTimer, timeout time.Duration) *myMap {
 	return &myMap{
-		timer: t,
+		timeoutPeriod: timeout * 3,
+		timer:         t,
 	}
 }
 
 func (m *myMap) Store(key interface{}, value interface{}) {
 	v := &_Value{
 		v: value,
-		t: m.timer.Submit(5*time.Second, func() {
+		t: m.timer.Submit(m.timeoutPeriod, func() {
 			m.Map.Delete(key)
 		}),
 	}
@@ -84,6 +92,58 @@ func (m *myMap) LoadAndDelete(key interface{}) (interface{}, bool) {
 }
 
 func (m *myMap) Delete(key interface{}) {
+	m.LoadAndDelete(key)
+}
+
+type activeMethodFuncs struct {
+	sync.Map
+	timeoutPeriod time.Duration
+	timer         *timer.HashedWheelTimer
+}
+
+func newActiveMethodFuncs(t *timer.HashedWheelTimer, timeout time.Duration) *activeMethodFuncs {
+	return &activeMethodFuncs{
+		timeoutPeriod: timeout,
+		timer:         t,
+	}
+}
+
+func (m *activeMethodFuncs) Store(key interface{}, value interface{}) {
+	v := &_Value{
+		v: value,
+		t: m.timer.Submit(m.timeoutPeriod, func() {
+			if value, ok := m.Map.LoadAndDelete(key); ok {
+				v := value.(*_Value)
+				if f, ok := v.v.(IMethodFunc); ok {
+					f.Release()
+				}
+			}
+		}),
+	}
+	m.Map.Store(key, v)
+}
+
+func (m *activeMethodFuncs) Load(key interface{}) (interface{}, bool) {
+	v, ok := m.Map.Load(key)
+	if !ok {
+		return nil, false
+	}
+	value := v.(*_Value)
+	value.t.Reset()
+	return value.v, true
+}
+
+func (m *activeMethodFuncs) LoadAndDelete(key interface{}) (interface{}, bool) {
+	v, ok := m.Map.LoadAndDelete(key)
+	if !ok {
+		return nil, false
+	}
+	value := v.(*_Value)
+	value.t.Cancel()
+	return value.v, true
+}
+
+func (m *activeMethodFuncs) Delete(key interface{}) {
 	m.LoadAndDelete(key)
 }
 
@@ -190,4 +250,12 @@ func ScanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	}
 	// Request more data.
 	return 0, nil, nil
+}
+
+func isNil(i interface{}) bool {
+	vi := reflect.ValueOf(i)
+	if vi.Kind() == reflect.Ptr {
+		return vi.IsNil()
+	}
+	return false
 }

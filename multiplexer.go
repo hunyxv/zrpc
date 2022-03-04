@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"math/rand"
-	"sync"
 	"time"
 
 	"github.com/hunyxv/utils/timer"
@@ -26,8 +25,19 @@ type SvcMultiplexer struct {
 	c              chan int
 }
 
-func NewSvcMultiplexer(nodeState *NodeState, logger Logger, rpc *RPCInstance) *SvcMultiplexer {
-	broker, err := NewBroker(nodeState, 5*time.Second, logger)
+func NewSvcMultiplexer(rpc *RPCInstance, opts ...Option) *SvcMultiplexer {
+	defOpts := &options{
+		MaxTimeoutPeriod:  5 * time.Minute,
+		Logger:            &logger{},
+		Node:              DefaultNode,
+		HeartbeatInterval: 10 * time.Second,
+	}
+	for _, f := range opts {
+		f(defOpts)
+	}
+
+	nodeState := &NodeState{Node: &defOpts.Node}
+	broker, err := NewBroker(nodeState, 5*time.Second, defOpts.Logger)
 	if err != nil {
 		panic(err)
 	}
@@ -37,13 +47,13 @@ func NewSvcMultiplexer(nodeState *NodeState, logger Logger, rpc *RPCInstance) *S
 		panic(err)
 	}
 	mux := &SvcMultiplexer{
-		logger:         logger,
-		activeChannels: newActiveMethodFuncs(t),
+		logger:         defOpts.Logger,
+		activeChannels: newActiveMethodFuncs(t, defOpts.MaxTimeoutPeriod),
 		nodeState:      nodeState,
 		broker:         broker,
 		rpc:            rpc,
 		timer:          t,
-		forward:        newMyMap(t),
+		forward:        newMyMap(t, defOpts.MaxTimeoutPeriod),
 		c:              make(chan int),
 	}
 	return mux
@@ -226,54 +236,4 @@ func (m *SvcMultiplexer) Close() {
 	m.timer.Stop()
 	m.broker.Close(nil) // TODO
 	close(m.c)
-}
-
-type activeMethodFuncs struct {
-	sync.Map
-	timer *timer.HashedWheelTimer
-}
-
-func newActiveMethodFuncs(t *timer.HashedWheelTimer) *activeMethodFuncs {
-	return &activeMethodFuncs{
-		timer: t,
-	}
-}
-
-func (m *activeMethodFuncs) Store(key interface{}, value interface{}) {
-	v := &_Value{
-		v: value,
-		t: m.timer.Submit(5*time.Minute, func() {
-			if value, ok := m.Map.LoadAndDelete(key); ok {
-				v := value.(*_Value)
-				if f, ok := v.v.(IMethodFunc); ok {
-					f.Release()
-				}
-			}
-		}),
-	}
-	m.Map.Store(key, v)
-}
-
-func (m *activeMethodFuncs) Load(key interface{}) (interface{}, bool) {
-	v, ok := m.Map.Load(key)
-	if !ok {
-		return nil, false
-	}
-	value := v.(*_Value)
-	value.t.Reset()
-	return value.v, true
-}
-
-func (m *activeMethodFuncs) LoadAndDelete(key interface{}) (interface{}, bool) {
-	v, ok := m.Map.LoadAndDelete(key)
-	if !ok {
-		return nil, false
-	}
-	value := v.(*_Value)
-	value.t.Cancel()
-	return value.v, true
-}
-
-func (m *activeMethodFuncs) Delete(key interface{}) {
-	m.LoadAndDelete(key)
 }

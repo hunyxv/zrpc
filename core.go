@@ -8,6 +8,7 @@ import (
 	"log"
 	"path"
 	"reflect"
+	"sync"
 )
 
 var (
@@ -23,8 +24,6 @@ var (
 	ctxType         = reflect.TypeOf(new(context.Context)).Elem()
 	readType        = reflect.TypeOf(new(io.Reader)).Elem()
 	writeCloserType = reflect.TypeOf(new(io.WriteCloser)).Elem()
-	//writeType       = reflect.TypeOf(new(io.Writer)).Elem()
-	//rwCloser        = reflect.TypeOf(new(io.ReadWriteCloser)).Elem()
 )
 
 type FuncMode int
@@ -54,6 +53,7 @@ type Server struct {
 // RPCInstance 保存管理 rpc 实例
 type RPCInstance struct {
 	servers map[string]*Server // server name : server
+	rwMutex sync.RWMutex
 }
 
 func NewRPCInstance() *RPCInstance {
@@ -128,13 +128,17 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 		log.Println("register: ", method.methodName, method.mode)
 		s.methods[method.methodName] = method
 	}
+	rpc.rwMutex.Lock()
 	rpc.servers[s.ServerName] = s
+	rpc.rwMutex.Unlock()
 	return nil
 }
 
 // GenerateExecFunc 查找并返回可执行函数
 // 	name: /{servername}/methodname
 func (rpc *RPCInstance) GenerateExecFunc(name string) (IMethodFunc, error) {
+	rpc.rwMutex.RLock()
+	defer rpc.rwMutex.RUnlock()
 	serverName, methodName := path.Split(name)
 	server, ok := rpc.servers[serverName]
 	if !ok {

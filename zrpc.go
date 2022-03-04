@@ -5,14 +5,14 @@ import (
 	"github.com/pborman/uuid"
 )
 
-var DefaultNodeState, _ = NewNodeState(&Node{
+var DefaultNode = Node{
 	ServiceName:     getServerName(),
 	NodeID:          uuid.NewUUID().String(),
 	LocalEndpoint:   "tcp://0.0.0.0:8080",
 	ClusterEndpoint: "tcp://0.0.0.0:8081",
 	StateEndpoint:   "tcp://0.0.0.0:8082",
 	IsIdle:          true,
-}, 0)
+}
 
 var (
 	defaultLogger Logger
@@ -49,10 +49,6 @@ func SetWorkPoolSize(size int) (err error) {
 
 // Run 启动 zrpc 服务
 func Run() error {
-	if defaultLogger == nil {
-		defaultLogger = &logger{}
-	}
-
 	if goroutinePool == nil {
 		if err := SetWorkPoolSize(0); err != nil {
 			return err
@@ -63,11 +59,16 @@ func Run() error {
 		defaultRPCInstance = NewRPCInstance()
 	}
 
-	svcMultiplexer = NewSvcMultiplexer(DefaultNodeState, defaultLogger, defaultRPCInstance)
+	if defaultLogger != nil {
+		svcMultiplexer = NewSvcMultiplexer(defaultRPCInstance, WithLogger(defaultLogger))
+	} else {
+		svcMultiplexer = NewSvcMultiplexer(defaultRPCInstance)
+	}
 	svcMultiplexer.Run()
 	return nil
 }
 
+// Close 关闭 zrpc 服务
 func Close() {
 	if svcMultiplexer == nil {
 		return

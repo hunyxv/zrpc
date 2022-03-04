@@ -12,6 +12,7 @@ import (
 
 	"github.com/hunyxv/utils/spinlock"
 	"github.com/vmihailenco/msgpack/v5"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type IMethodFunc interface {
@@ -41,10 +42,42 @@ func NewMethodFunc(method *Method) (IMethodFunc, error) {
 	return nil, fmt.Errorf("unknown function type: %+v", method.mode)
 }
 
+var _ IMethodFunc = (*MethodFunc)(nil)
+
+type MethodFunc struct {
+	node *Node
+}
+
+func (f *MethodFunc) FuncMode() FuncMode     { return -1 }
+func (f *MethodFunc) Call(p *Pack, r IReply) {}
+func (f *MethodFunc) Next([][]byte)          {}
+func (f *MethodFunc) End()                   {}
+func (f *MethodFunc) Release() error         { return nil }
+
+func (f *MethodFunc) unmarshalCtx(b []byte) (context.Context, trace.Span, error){
+	// if len(b) == 0 {
+	// 	return context.Background(), nil, nil
+	// }
+
+	// ctx := NewContext(context.Background())
+	// if err := msgpack.Unmarshal(b, ctx); err != nil {
+	// 	return nil, nil, err
+	// }
+	// if tinfo := ctx.Value(TracePayloadKey); tinfo != nil {
+	// 	if m, ok := tinfo.(map[string]string); ok {
+
+	// 	}
+	// }
+
+	return nil, nil, nil
+}
+
+
 var _ IMethodFunc = (*ReqRepFunc)(nil)
 
 // ReqRepFunc 请求应答类型函数
 type ReqRepFunc struct {
+	*MethodFunc
 	ctx    context.Context
 	cancel context.CancelFunc
 	id     string
@@ -138,8 +171,6 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	f.reply.Reply(resp)
 }
 
-func (f *ReqRepFunc) Next([][]byte) {}
-func (f *ReqRepFunc) End()          {}
 func (f *ReqRepFunc) Release() error {
 	f.cancel()
 	return nil
@@ -147,6 +178,8 @@ func (f *ReqRepFunc) Release() error {
 
 // StreamReqRepFunc 流式请求类型函数
 type StreamReqRepFunc struct {
+	*MethodFunc
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	id     string
@@ -306,6 +339,8 @@ type writeCloser struct {
 }
 
 type ReqStreamRepFunc struct {
+	*MethodFunc
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	id     string
@@ -435,9 +470,6 @@ func (rsf *ReqStreamRepFunc) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (rsf *ReqStreamRepFunc) Next([][]byte) {}
-func (rsf *ReqStreamRepFunc) End()          {}
-
 func (rsf *ReqStreamRepFunc) Close() error {
 	return rsf.Release()
 }
@@ -478,6 +510,8 @@ type readWriteCloser struct {
 }
 
 type StreamFunc struct {
+	*MethodFunc
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	Method *Method // function
