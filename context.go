@@ -7,7 +7,6 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/trace"
 )
 
 type zrpcContextKey string
@@ -48,21 +47,32 @@ func (ctx *Context) UnmarshalMsgpack(b []byte) error {
 	if ctx.Context == nil {
 		ctx.Context = context.Background()
 	}
+
 	if len(b) > 0 {
-		var m map[zrpcContextKey]interface{}
+		var m map[zrpcContextKey]map[string]interface{}
 		if err := msgpack.Unmarshal(b, &m); err != nil {
 			return err
 		}
 
-		for k, v := range m {
-			ctx.Context = context.WithValue(ctx.Context, k, v)
+		if p, ok := m[TracePayloadKey]; ok {
+			payload := make(map[string]string, len(p))
+			for k, v := range p {
+				if s, ok := v.(string); ok {
+					payload[k] = s
+				}
+			}
+			ctx.Context = context.WithValue(ctx.Context, TracePayloadKey, payload)
+		}
+
+		if v, ok := m[PayloadKey]; ok {
+			ctx.Context = context.WithValue(ctx.Context, PayloadKey, v)
 		}
 	}
 	return nil
 }
 
 // InjectTrace2ctx 提取链路追中上下文信息，并注入到新的 context 中
-func InjectTrace2ctx(ctx context.Context, spanContext trace.SpanContext) context.Context {
+func InjectTrace2ctx(ctx context.Context) context.Context {
 	t := ctx.Value(TracePayloadKey)
 	var payload map[string]string
 	if !isNil(t) {
