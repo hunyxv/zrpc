@@ -12,6 +12,9 @@ import (
 
 	"github.com/hunyxv/utils/spinlock"
 	"github.com/vmihailenco/msgpack/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -45,7 +48,11 @@ func NewMethodFunc(method *Method) (IMethodFunc, error) {
 var _ IMethodFunc = (*MethodFunc)(nil)
 
 type MethodFunc struct {
-	node *Node
+	ctx    context.Context
+	cancel context.CancelFunc
+	Method *Method // function
+	reply  IReply
+	span   trace.Span
 }
 
 func (f *MethodFunc) FuncMode() FuncMode     { return -1 }
@@ -54,43 +61,53 @@ func (f *MethodFunc) Next([][]byte)          {}
 func (f *MethodFunc) End()                   {}
 func (f *MethodFunc) Release() error         { return nil }
 
-func (f *MethodFunc) unmarshalCtx(b []byte) (context.Context, trace.Span, error){
-	// if len(b) == 0 {
-	// 	return context.Background(), nil, nil
-	// }
+func (f *MethodFunc) unmarshalCtx(b []byte) (context.Context, error) {
+	if len(b) == 0 {
+		return context.Background(), nil
+	}
 
-	// ctx := NewContext(context.Background())
-	// if err := msgpack.Unmarshal(b, ctx); err != nil {
-	// 	return nil, nil, err
-	// }
-	// if tinfo := ctx.Value(TracePayloadKey); tinfo != nil {
-	// 	if m, ok := tinfo.(map[string]string); ok {
+	ctx := NewContext(f.ctx)
+	if err := msgpack.Unmarshal(b, &ctx); err != nil {
+		return nil, err
+	}
 
-	// 	}
-	// }
-
-	return nil, nil, nil
+	if tinfo := ctx.Value(TracePayloadKey); tinfo != nil {
+		if m, ok := tinfo.(map[string]string); ok {
+			ctx.Context = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m)) //Inject(ctx, propagation.MapCarrier(payload))
+			ctx.Context, f.span = otel.GetTracerProvider().Tracer("zrpc-go").Start(ctx, f.Method.methodName)
+			return ctx, nil
+		}
+	}
+	return ctx, nil
 }
 
+func (f *MethodFunc) setStatus(code codes.Code, desc string) {
+	if f.span != nil {
+		f.span.SetStatus(code, desc)
+	}
+}
+
+func (f *MethodFunc) spanEnd() {
+	if f.span != nil {
+		f.span.End()
+	}
+}
 
 var _ IMethodFunc = (*ReqRepFunc)(nil)
 
 // ReqRepFunc 请求应答类型函数
 type ReqRepFunc struct {
 	*MethodFunc
-	ctx    context.Context
-	cancel context.CancelFunc
-	id     string
-	Method *Method // function
-	reply  IReply
 }
 
 func NewReqRepFunc(m *Method) IMethodFunc {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ReqRepFunc{
-		ctx:    ctx,
-		cancel: cancel,
-		Method: m,
+		MethodFunc: &MethodFunc{
+			ctx:    ctx,
+			cancel: cancel,
+			Method: m,
+		},
 	}
 }
 
@@ -101,7 +118,6 @@ func (f *ReqRepFunc) FuncMode() FuncMode {
 // Call 将 func 放入 pool 中运行
 func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	f.reply = r
-	f.id = p.Identity
 
 	if len(p.Args) != len(f.Method.paramTypes) {
 		f.reply.SendError(p, fmt.Errorf("not enough arguments in call to %s", f.Method.methodName))
@@ -117,21 +133,20 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 
 	// 反序列化参数
 	paramsValue := make([]reflect.Value, len(p.Args))
-
-	var ctx = NewContext(f.ctx)
-	err := msgpack.Unmarshal(p.Args[0], ctx)
+	ctx, err := f.unmarshalCtx(p.Args[0])
 	if err != nil {
 		log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 		f.reply.SendError(p, err)
 		return
 	}
+	defer f.spanEnd()
 	paramsValue[0] = reflect.ValueOf(ctx)
-
 	for i := 1; i < len(f.Method.paramTypes); i++ {
 		fieldType := f.Method.paramTypes[i]
 		fieldValue := reflect.New(fieldType)
 		err := msgpack.Unmarshal(p.Args[i], fieldValue.Interface())
 		if err != nil {
+			f.setStatus(codes.Error, "zrpc: Internal Server Error")
 			log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 			f.reply.SendError(p, err)
 			return
@@ -154,7 +169,9 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	// 最后一个是error类型
 	errVal := result[len(result)-1]
 	if !errVal.IsNil() {
-		ret, _ := msgpack.Marshal(errVal.Interface().(error).Error())
+		err = errVal.Interface().(error)
+		f.setStatus(codes.Error, err.Error())
+		ret, _ := msgpack.Marshal(err.Error())
 		rets = append(rets, ret)
 	} else {
 		ret, _ := msgpack.Marshal(errVal.Interface())

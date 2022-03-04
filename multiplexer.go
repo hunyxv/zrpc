@@ -170,11 +170,9 @@ func (m *SvcMultiplexer) dispatcher() {
 			case STREAM: // 流式请求中
 				mf, ok := m.activeChannels.Load(msgid)
 				if ok {
-					//m.submitTask(func() {
 					if methodFunc, ok := mf.(IMethodFunc); ok {
 						methodFunc.Next(pack.Args)
 					}
-					//})
 				} else {
 					value, ok := m.forward.Load(msgid)
 					if !ok {
