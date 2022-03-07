@@ -257,5 +257,5 @@ func isNil(i interface{}) bool {
 	if vi.Kind() == reflect.Ptr {
 		return vi.IsNil()
 	}
-	return false
+	return i == nil
 }

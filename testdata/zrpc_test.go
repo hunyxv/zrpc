@@ -214,13 +214,6 @@ func TestReqRepFunc(t *testing.T) {
 	defer soc.Close()
 	defer soc.Disconnect("tcp://127.0.0.1:9080")
 
-	err = soc.Connect("tcp://127.0.0.1:8080")
-	if err != nil {
-		panic(err)
-	}
-	defer soc.Close()
-	defer soc.Disconnect("tcp://127.0.0.1:8080")
-
 	for i := 0; i < 10; i++ {
 
 		now := time.Now()
@@ -299,7 +292,7 @@ func TestStreamReqFunc(t *testing.T) {
 	pack.SetMethodName("sayhello/StreamReqFunc")
 	msgid := zrpc.NewMessageID()
 	pack.Set(zrpc.MESSAGEID, msgid)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 10; i++ {
 		rawPack, err := msgpack.Marshal(&pack)
 		if err != nil {
 			panic(err)
@@ -342,8 +335,25 @@ func TestStreamReqFunc(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	log.Println("msg: ", msg, string(msg[0]))
-	t.Logf("takes %s", time.Since(now))
+
+	var result *zrpc.Pack
+	msgpack.Unmarshal(msg[0], &result)
+	if result.Stage == zrpc.ERROR {
+		var e string
+		msgpack.Unmarshal(result.Args[0], &e)
+		t.Logf("ERR: %s", errors.New(e))
+		return
+	}
+
+	var respStr string
+	msgpack.Unmarshal(result.Args[0], &respStr)
+	var errStr string
+	if err := msgpack.Unmarshal(result.Args[1], &errStr); err != nil {
+		t.Fatal(err)
+	}
+	log.Println("msg: ", respStr)
+	log.Println("err", errStr, errStr == "")
+	t.Logf("cost: %s", time.Since(now))
 	time.Sleep(time.Second)
 }
 

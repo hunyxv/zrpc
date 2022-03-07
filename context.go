@@ -22,7 +22,6 @@ const (
 //   思路：几个固定字段作为上下文信息，比如超时时间、环境变量、链路追踪等
 type Context struct {
 	context.Context
-	//Payload  map `msgpack:"payload" json:"payload"`
 }
 
 func NewContext(ctx context.Context) *Context {
@@ -43,6 +42,10 @@ func (ctx *Context) MarshalMsgpack() ([]byte, error) {
 	return msgpack.Marshal(payload)
 }
 
+// func (ctx *Context) Value(key interface{}) interface{} {
+// 	return ctx.Context.Value(key)
+// }
+
 func (ctx *Context) UnmarshalMsgpack(b []byte) error {
 	if ctx.Context == nil {
 		ctx.Context = context.Background()
@@ -61,7 +64,9 @@ func (ctx *Context) UnmarshalMsgpack(b []byte) error {
 					payload[k] = s
 				}
 			}
-			ctx.Context = context.WithValue(ctx.Context, TracePayloadKey, payload)
+			if len(payload) > 0 {
+				ctx.Context = context.WithValue(ctx.Context, TracePayloadKey, payload)
+			}
 		}
 
 		if v, ok := m[PayloadKey]; ok {

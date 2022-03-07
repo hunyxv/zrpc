@@ -71,10 +71,10 @@ func (f *MethodFunc) unmarshalCtx(b []byte) (context.Context, error) {
 		return nil, err
 	}
 
-	if tinfo := ctx.Value(TracePayloadKey); tinfo != nil {
+	if tinfo := ctx.Value(TracePayloadKey); !isNil(tinfo) {
 		if m, ok := tinfo.(map[string]string); ok {
-			ctx.Context = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m)) //Inject(ctx, propagation.MapCarrier(payload))
-			ctx.Context, f.span = otel.GetTracerProvider().Tracer("zrpc-go").Start(ctx, f.Method.methodName)
+			ctx.Context = otel.GetTextMapPropagator().Extract(ctx.Context, propagation.MapCarrier(m))
+			_, f.span = otel.GetTracerProvider().Tracer("zrpc-go").Start(ctx, f.Method.methodName)
 			return ctx, nil
 		}
 	}
@@ -118,7 +118,6 @@ func (f *ReqRepFunc) FuncMode() FuncMode {
 // Call 将 func 放入 pool 中运行
 func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	f.reply = r
-
 	if len(p.Args) != len(f.Method.paramTypes) {
 		f.reply.SendError(p, fmt.Errorf("not enough arguments in call to %s", f.Method.methodName))
 		return
@@ -197,13 +196,7 @@ func (f *ReqRepFunc) Release() error {
 type StreamReqRepFunc struct {
 	*MethodFunc
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	id     string
-	req    *Pack
-	Method *Method // function
-	reply  IReply
-
+	req *Pack
 	r   io.ReadCloser
 	w   io.WriteCloser
 	buf *bufio.ReadWriter
@@ -221,9 +214,11 @@ func NewStreamReqRepFunc(m *Method) (IMethodFunc, error) {
 	buf := bufio.NewReadWriter(bufio.NewReader(readCloser), bufio.NewWriter(writerCloser))
 	ctx, cancel := context.WithCancel(context.Background())
 	return &StreamReqRepFunc{
-		ctx:    ctx,
-		cancel: cancel,
-		Method: m,
+		MethodFunc: &MethodFunc{
+			ctx:    ctx,
+			cancel: cancel,
+			Method: m,
+		},
 
 		r:   readCloser,
 		w:   writerCloser,
@@ -238,7 +233,6 @@ func (srf *StreamReqRepFunc) FuncMode() FuncMode {
 }
 
 func (srf *StreamReqRepFunc) Call(p *Pack, ireplye IReply) {
-	srf.id = p.Identity
 	srf.reply = ireplye
 	srf.req = p
 
@@ -257,13 +251,13 @@ func (srf *StreamReqRepFunc) Call(p *Pack, ireplye IReply) {
 	// 反序列化参数
 	paramsValue := make([]reflect.Value, len(p.Args))
 	// 第一个参数是 ctx
-	var ctx = NewContext(srf.ctx)
-	err := msgpack.Unmarshal(p.Args[0], &ctx)
+	ctx, err := srf.unmarshalCtx(p.Args[0])
 	if err != nil {
 		log.Printf("ReqRep err: arguments unmarshal fail: %v", err)
 		srf.reply.SendError(p, err)
 		return
 	}
+	defer srf.spanEnd()
 	paramsValue[0] = reflect.ValueOf(ctx)
 
 	for i := 1; i < len(srf.Method.paramTypes)-1; i++ {
@@ -293,7 +287,9 @@ func (srf *StreamReqRepFunc) Call(p *Pack, ireplye IReply) {
 	// 最后一个是error类型
 	errVal := result[len(result)-1]
 	if !errVal.IsNil() {
-		ret, _ := msgpack.Marshal(errVal.Interface().(error).Error())
+		err = errVal.Interface().(error)
+		srf.setStatus(codes.Error, err.Error())
+		ret, _ := msgpack.Marshal(err.Error())
 		rets = append(rets, ret)
 	} else {
 		ret, _ := msgpack.Marshal(errVal.Interface())
