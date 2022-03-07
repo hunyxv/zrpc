@@ -42,9 +42,6 @@ func (ctx *Context) MarshalMsgpack() ([]byte, error) {
 	return msgpack.Marshal(payload)
 }
 
-// func (ctx *Context) Value(key interface{}) interface{} {
-// 	return ctx.Context.Value(key)
-// }
 
 func (ctx *Context) UnmarshalMsgpack(b []byte) error {
 	if ctx.Context == nil {

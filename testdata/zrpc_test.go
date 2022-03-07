@@ -20,8 +20,12 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+type User struct {
+	Name string `msgpack:"name"`
+}
+
 type ISayHello interface {
-	Hello(ctx context.Context) (string, error)
+	Hello(ctx context.Context, user *User) (string, error)
 	StreamReqFunc(ctx context.Context, reader io.Reader) (string, error)
 	StreamRespFunc(ctx context.Context, num int, writer io.WriteCloser) error
 	StreamFunc(ctx context.Context, total int, rw io.ReadWriteCloser) error
@@ -31,8 +35,8 @@ var _ ISayHello = (*SayHello)(nil)
 
 type SayHello struct{}
 
-func (s *SayHello) Hello(ctx context.Context) (string, error) {
-	log.Println("Hello world!")
+func (s *SayHello) Hello(ctx context.Context, user *User) (string, error) {
+	log.Printf("Hello, %s!\n", user.Name)
 	return "world", errors.New("a error")
 }
 
@@ -215,7 +219,6 @@ func TestReqRepFunc(t *testing.T) {
 	defer soc.Disconnect("tcp://127.0.0.1:9080")
 
 	for i := 0; i < 10; i++ {
-
 		now := time.Now()
 		ctx := &zrpc.Context{
 			Context: context.Background(),
@@ -225,11 +228,12 @@ func TestReqRepFunc(t *testing.T) {
 			panic(err)
 		}
 
+		data, _ := msgpack.Marshal(&User{Name: "hunyxv"})
 		pack := &zrpc.Pack{
 			Identity: id,
 			Header:   make(zrpc.Header),
 			Stage:    zrpc.REQUEST,
-			Args:     [][]byte{rawCtx},
+			Args:     [][]byte{rawCtx, data},
 		}
 		pack.SetMethodName("sayhello/Hello")
 		pack.Set(zrpc.MESSAGEID, zrpc.NewMessageID())

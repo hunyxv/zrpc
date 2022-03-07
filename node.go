@@ -17,14 +17,6 @@ type Node struct {
 	IsIdle          bool   `json:"is_idle" msgpack:"is_idle"`
 }
 
-// type Metrics interface {
-// 	Cap() int
-// 	Running() int
-// 	Submit(task func()) error
-// }
-
-// var _ Metrics = (*Workbench)(nil)
-
 type NodeState struct {
 	*Node
 

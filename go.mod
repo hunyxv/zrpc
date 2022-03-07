@@ -7,6 +7,7 @@ require (
 	github.com/panjf2000/ants/v2 v2.4.7
 	github.com/pborman/uuid v1.2.1
 	github.com/pebbe/zmq4 v1.2.7
+	github.com/pkg/errors v0.9.1
 	github.com/vmihailenco/msgpack/v5 v5.3.5
 	go.opentelemetry.io/otel v1.4.1
 	go.opentelemetry.io/otel/trace v1.4.1
