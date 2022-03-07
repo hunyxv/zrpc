@@ -19,6 +19,7 @@ require (
 	github.com/hunyxv/utils v0.0.0-20220221134715-bf42549b7954 // indirect
 	github.com/panjf2000/ants/v2 v2.4.8 // indirect
 	github.com/pborman/uuid v1.2.1 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	golang.org/x/sys v0.0.0-20210423185535-09eb48e85fd7 // indirect
 )
