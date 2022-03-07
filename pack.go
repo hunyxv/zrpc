@@ -101,7 +101,3 @@ func (p *Pack) Marshal(args []interface{}) (pack []byte, err error) {
 func (p *Pack) Unmarshal(b []byte) error {
 	return msgpack.Unmarshal(b, &p)
 }
-
-type DefaultHeader struct {
-	MsgID string `msgpack:"msgid"`
-}

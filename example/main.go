@@ -3,15 +3,19 @@ package main
 import (
 	"context"
 	"errors"
+	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"reflect"
 	"syscall"
+	"time"
 
 	"github.com/hunyxv/zrpc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -29,9 +33,10 @@ type SayHello struct{}
 
 func (s *SayHello) Hello(ctx context.Context) (string, error) {
 	log.Println("Hello world!")
+	time.Sleep(100 * time.Millisecond)
+	getIP(ctx)
 	return "world", errors.New("a error")
 }
-
 
 func main() {
 	// 初始化 tp
@@ -57,8 +62,6 @@ func main() {
 	<-ch
 	zrpc.Close()
 }
-
-
 
 const (
 	service     = "trace-demo"
@@ -92,4 +95,27 @@ func isNil(i interface{}) bool {
 		return vi.IsNil()
 	}
 	return false
+}
+
+func getIP(ctx context.Context) {
+	client := http.DefaultClient
+	req, _ := http.NewRequest("GET", "http://icanhazip.com", nil)
+	ctx, span := otel.GetTracerProvider().Tracer("SayHello").Start(ctx, "getIP")
+	defer span.End()
+
+	req = req.WithContext(ctx)
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+	res, err := client.Do(req)
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		return
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		return
+	}
+	log.Printf("Received result: %s\n", body)
 }
