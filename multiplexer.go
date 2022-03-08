@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"math/rand"
+	"strconv"
 	"time"
 
 	"github.com/hunyxv/utils/timer"
@@ -22,6 +23,7 @@ type SvcMultiplexer struct {
 	rpc            *RPCInstance
 	timer          *timer.HashedWheelTimer
 	forward        *myMap
+	opts           *options
 	c              chan int
 }
 
@@ -31,6 +33,7 @@ func NewSvcMultiplexer(rpc *RPCInstance, opts ...Option) *SvcMultiplexer {
 		Logger:            &logger{},
 		Node:              DefaultNode,
 		HeartbeatInterval: 10 * time.Second,
+		PackTTL:           1,
 	}
 	for _, f := range opts {
 		f(defOpts)
@@ -54,6 +57,7 @@ func NewSvcMultiplexer(rpc *RPCInstance, opts ...Option) *SvcMultiplexer {
 		rpc:            rpc,
 		timer:          t,
 		forward:        newMyMap(t, defOpts.MaxTimeoutPeriod),
+		opts:           defOpts,
 		c:              make(chan int),
 	}
 	return mux
@@ -134,6 +138,12 @@ func (m *SvcMultiplexer) dispatcher() {
 				var fromPeerNode bool
 				ttlStr := pack.Header.Get(TTL)
 				if ttlStr != "" && ttlStr != "0" {
+					ttl, _ := strconv.Atoi(ttlStr)
+					if ttl > m.opts.PackTTL { // 超过了最大生存时间
+						m.logger.Warnf("SvcMultiplexer: packet exceeds maximum ttl, %d", ttl)
+						m.SendError(pack, ErrSubmitTimeout)
+						continue
+					}
 					fromPeerNode = true
 				}
 

@@ -9,6 +9,7 @@ type options struct {
 	Logger            Logger        // logger
 	Node              Node          // 节点信息：服务名称、监听地址
 	HeartbeatInterval time.Duration // 节点间心跳间隔
+	PackTTL           int           // 数据包的最大跳数
 }
 
 // WithMaxTimeoutPeriod 函数执行最大时间期限
@@ -36,5 +37,12 @@ func WithNodeInfo(node Node) Option {
 func WithHeartbeatInterval(t time.Duration) Option {
 	return func(opt *options) {
 		opt.HeartbeatInterval = t
+	}
+}
+
+// WithPackTTL 设置数据包的最大跳数
+func WithPackTTL(ttl int) Option{
+	return func(opt *options) {
+		opt.PackTTL = ttl
 	}
 }
