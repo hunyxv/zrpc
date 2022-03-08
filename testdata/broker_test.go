@@ -37,6 +37,9 @@ func (*logger) Error(args ...interface{}) {
 func (*logger) Errorf(format string, args ...interface{}) {
 	log.Printf(format, args...)
 }
+func (*logger) Fatal(args ...interface{}) {
+	log.Fatal(args...)
+}
 
 func runBroker(state *zrpc.NodeState) (zrpc.Broker, error) {
 	broker, err := zrpc.NewBroker(state, 5*time.Second, &logger{})

@@ -296,7 +296,7 @@ func TestStreamReqFunc(t *testing.T) {
 	pack.SetMethodName("sayhello/StreamReqFunc")
 	msgid := zrpc.NewMessageID()
 	pack.Set(zrpc.MESSAGEID, msgid)
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 100; i++ {
 		rawPack, err := msgpack.Marshal(&pack)
 		if err != nil {
 			panic(err)

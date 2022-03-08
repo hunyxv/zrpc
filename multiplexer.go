@@ -2,6 +2,7 @@ package zrpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"math/rand"
@@ -104,7 +105,7 @@ func (m *SvcMultiplexer) submitTask(f func()) error {
 	return goroutinePool.Submit(f)
 }
 
-func (m *SvcMultiplexer) do(msgid string, pack *Pack) error {
+func (m *SvcMultiplexer) do(msgid string, pack *Pack) (err error) {
 	mf, err := m.rpc.GenerateExecFunc(pack.MethodName())
 	if err != nil {
 		return err
@@ -115,6 +116,12 @@ func (m *SvcMultiplexer) do(msgid string, pack *Pack) error {
 			mf.Call(pack, m)
 		})
 	}
+
+	defer func() {
+		if err != nil {
+			m.activeChannels.Delete(msgid)
+		}
+	}()
 
 	m.activeChannels.Store(msgid, mf)
 	return m.submitTask(func() {
@@ -135,7 +142,7 @@ func (m *SvcMultiplexer) dispatcher() {
 			}
 			switch pack.Stage {
 			case REQUEST: // 请求
-				var fromPeerNode bool
+				//var fromPeerNode bool
 				ttlStr := pack.Header.Get(TTL)
 				if ttlStr != "" && ttlStr != "0" {
 					ttl, _ := strconv.Atoi(ttlStr)
@@ -144,23 +151,30 @@ func (m *SvcMultiplexer) dispatcher() {
 						m.SendError(pack, ErrSubmitTimeout)
 						continue
 					}
-					fromPeerNode = true
+					//fromPeerNode = true
+				}
+				isIdle, ok := m.nodeState.isIdle()
+				if ok {
+					// 同步节点状态
+					go func() { m.broker.PublishNodeState() }()
 				}
 
-				// 不是来自平行节点或本节点空闲
-				if !fromPeerNode || m.nodeState.isIdle() {
+				// 本节点空闲
+				if isIdle {
 					err := m.do(msgid, pack)
 					if err == nil {
 						continue
-					} else if !errors.Is(err, ants.ErrPoolOverload) {
-						// 本地满载了，转发。报的不是满载异常，返回异常给客户端
-						m.logger.Errorf("SvcMultiplexer: %v", err)
+					} else if errors.Is(err, ants.ErrPoolOverload) {
+						// 工作池满载了
+						m.logger.Warnf("SvcMultiplexer: %v", err)
 						m.SendError(pack, ErrSubmitTimeout)
+						continue
+					} else { // 其他异常
+						m.logger.Errorf("SvcMultiplexer: %v", err)
+						m.SendError(pack, err)
 						continue
 					}
 				}
-
-				m.activeChannels.Delete(msgid)
 
 				// 转发给其他节点
 				n, err := m.SelectPeerNode()
@@ -170,7 +184,6 @@ func (m *SvcMultiplexer) dispatcher() {
 					if err := m.do(msgid, pack); err != nil {
 						// 本地无法处理报错
 						m.logger.Errorf("SvcMultiplexer: %v", err)
-						m.activeChannels.Delete(msgid)
 						m.SendError(pack, ErrSubmitTimeout)
 					}
 					continue
@@ -234,9 +247,61 @@ func (m *SvcMultiplexer) SelectPeerNode() (n Node, err error) {
 	return
 }
 
+func (m *SvcMultiplexer) AddOrUpdate(endpoint string, metadata []byte) error {
+	if endpoint == m.nodeState.LocalEndpoint {
+		return nil
+	}
+
+	var node Node
+	if err := json.Unmarshal(metadata, &node); err != nil {
+		return err
+	}
+
+	all := m.broker.AllPeerNode()
+	var updateNode *Node
+	for _, n := range all {
+		if n == node {
+			return nil
+		}
+
+		if n.NodeID == node.NodeID ||
+			n.LocalEndpoint == node.LocalEndpoint ||
+			n.ClusterEndpoint == node.LocalEndpoint ||
+			n.ClusterEndpoint == node.ClusterEndpoint ||
+			n.StateEndpoint == node.StateEndpoint {
+			*updateNode = n
+		}
+	}
+	if updateNode != nil {
+		m.broker.DelPeerNode(updateNode)
+	}
+	m.broker.AddPeerNode(&node)
+	return nil
+}
+
+func (m *SvcMultiplexer) Delete(endpoint string) {
+	if m.nodeState.LocalEndpoint == endpoint {
+		return
+	}
+	all := m.broker.AllPeerNode()
+	for _, node := range all {
+		if node.LocalEndpoint == endpoint {
+			m.broker.DelPeerNode(&node)
+		}
+	}
+}
+
 func (m *SvcMultiplexer) Run() {
 	go m.timer.Start()
 	go m.broker.Run()
+	if m.opts.RegisterDiscover != nil {
+		// 注册服务
+		go m.opts.RegisterDiscover.Register()
+		defer m.opts.RegisterDiscover.Deregister()
+		// 服务发现
+		go m.opts.RegisterDiscover.Watch(m)
+		defer m.opts.RegisterDiscover.Stop()
+	}
 	m.dispatcher()
 }
 

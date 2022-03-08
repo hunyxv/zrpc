@@ -48,7 +48,7 @@ func SetWorkPoolSize(size int) (err error) {
 }
 
 // Run 启动 zrpc 服务
-func Run() error {
+func Run(opts ...Option) error {
 	if goroutinePool == nil {
 		if err := SetWorkPoolSize(0); err != nil {
 			return err
@@ -59,11 +59,7 @@ func Run() error {
 		defaultRPCInstance = NewRPCInstance()
 	}
 
-	if defaultLogger != nil {
-		svcMultiplexer = NewSvcMultiplexer(defaultRPCInstance, WithLogger(defaultLogger))
-	} else {
-		svcMultiplexer = NewSvcMultiplexer(defaultRPCInstance)
-	}
+	svcMultiplexer = NewSvcMultiplexer(defaultRPCInstance, opts...)
 	svcMultiplexer.Run()
 	return nil
 }

@@ -5,11 +5,12 @@ import "time"
 type Option func(opt *options)
 
 type options struct {
-	MaxTimeoutPeriod  time.Duration // 函数执行最大时间期限
-	Logger            Logger        // logger
-	Node              Node          // 节点信息：服务名称、监听地址
-	HeartbeatInterval time.Duration // 节点间心跳间隔
-	PackTTL           int           // 数据包的最大跳数
+	MaxTimeoutPeriod  time.Duration    // 函数执行最大时间期限
+	Logger            Logger           // logger
+	Node              Node             // 节点信息：服务名称、监听地址
+	HeartbeatInterval time.Duration    // 节点间心跳间隔
+	PackTTL           int              // 数据包的最大跳数
+	RegisterDiscover  RegisterDiscover // 服务发现和注册
 }
 
 // WithMaxTimeoutPeriod 函数执行最大时间期限
@@ -41,8 +42,14 @@ func WithHeartbeatInterval(t time.Duration) Option {
 }
 
 // WithPackTTL 设置数据包的最大跳数
-func WithPackTTL(ttl int) Option{
+func WithPackTTL(ttl int) Option {
 	return func(opt *options) {
 		opt.PackTTL = ttl
+	}
+}
+
+func WithRegisterDiscover(rd RegisterDiscover) Option {
+	return func(opt *options) {
+		opt.RegisterDiscover = rd
 	}
 }

@@ -50,19 +50,31 @@ func (s *NodeState) isPausing() bool {
 	return atomic.LoadInt32(&(s.flag)) == 1
 }
 
-func (s *NodeState) isIdle() bool {
+func (s *NodeState) isIdle() (bool, bool) {
 	// 本节点
 	if s.isSelf {
+		if goroutinePool == nil {
+			return false, false
+		}
 		// 本节点负载大于 80% 不再接收其他节点任务
-		return float64(goroutinePool.Running())/float64(goroutinePool.Cap()) <= 0.8
+		idle := float64(goroutinePool.Running())/float64(goroutinePool.Cap()) <= 0.8
+		if idle && s.isPausing() {
+			s.pursue()
+			return true, true
+		}
+		if !idle && !s.isPausing() {
+			s.pause()
+			return true, true
+		}
+		return idle, false
 	}
 
 	// 平行节点
-	return s.IsIdle
+	return s.IsIdle, false
 }
 
 func (s *NodeState) Marshal() []byte {
-	s.IsIdle = s.isIdle()
+	s.IsIdle, _ = s.isIdle()
 	b, _ := msgpack.Marshal(s.Node)
 	return b
 }

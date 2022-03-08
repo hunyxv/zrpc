@@ -391,22 +391,10 @@ func (peer *peerNodeManager) PublishNodeState() {
 	}
 	pack.SetMethodName(SYNCSTATE)
 	// 空闲&&暂停状态
-	if peer.NodeState.isIdle() && peer.NodeState.isPausing() {
-		peer.NodeState.pursue()
-		state := peer.NodeState.Marshal()
-		pack.Args = append(pack.Args, state)
-		bytePack, _ := msgpack.Marshal(pack)
-		peer.statebe.Send() <- [][]byte{bytePack}
-		return
-	}
-	// 繁忙&&却非暂停状态
-	if !peer.NodeState.isIdle() && !peer.NodeState.isPausing() {
-		peer.NodeState.pause()
-		state := peer.NodeState.Marshal()
-		pack.Args = append(pack.Args, state)
-		bytePack, _ := msgpack.Marshal(pack)
-		peer.statebe.Send() <- [][]byte{bytePack}
-	}
+	state := peer.NodeState.Marshal()
+	pack.Args = append(pack.Args, state)
+	bytePack, _ := msgpack.Marshal(pack)
+	peer.statebe.Send() <- [][]byte{bytePack}
 }
 
 // refreshNodeStatus 接收订阅的节点状态，刷新节点信息（主要是空闲繁忙状态）

@@ -11,6 +11,7 @@ type Logger interface {
 	Warnf(format string, args ...interface{})
 	Error(args ...interface{})
 	Errorf(format string, args ...interface{})
+	Fatal(args ...interface{})
 }
 
 type logger struct{}
@@ -38,4 +39,8 @@ func (*logger) Error(args ...interface{}) {
 }
 func (*logger) Errorf(format string, args ...interface{}) {
 	log.Printf(format, args...)
+}
+
+func(*logger) Fatal(args ...interface{}) {
+	log.Fatal(args...)
 }
