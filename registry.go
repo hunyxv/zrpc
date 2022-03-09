@@ -42,12 +42,26 @@ type ServiceDiscover interface {
 
 // WatchCallback 服务发现，节点变更事件回调接口
 type WatchCallback interface {
-	AddOrUpdate(endpoint string, metadata []byte) error
-	Delete(endpoint string)
+	AddOrUpdate(nodeid string, metadata []byte) error
+	Delete(nodeid string)
 }
 
 // RegisterDiscover 服务注册与发现
 type RegisterDiscover interface {
 	ServiceRegister
 	ServiceDiscover
+}
+
+var _ RegisterDiscover = (*registerDiscover)(nil)
+
+type registerDiscover struct {
+	ServiceRegister
+	ServiceDiscover
+}
+
+func NewRegisterDiscover(r ServiceRegister, d ServiceDiscover) RegisterDiscover {
+	return &registerDiscover{
+		ServiceRegister: r,
+		ServiceDiscover: d,
+	}
 }

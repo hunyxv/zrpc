@@ -31,13 +31,13 @@ func NewEtcdRegistry(cnf *RegisterConfig) (ServiceRegister, error) {
 		return nil, err
 	}
 	if cnf.Logger == nil {
-		cnf.Logger = defaultLogger
+		cnf.Logger = &logger{}
 	}
 
 	key := strings.Join([]string{
 		cnf.ServicePrefix,
 		cnf.ServerInfo.ServiceName,
-		cnf.ServerInfo.LocalEndpoint}, "/")
+		cnf.ServerInfo.NodeID}, "/")
 	ctx, cancel := context.WithCancel(context.Background())
 	return &etcdRegister{
 		ctx:    ctx,
@@ -73,7 +73,7 @@ func (er *etcdRegister) Register() {
 					er.cnf.Logger.Warnf("etcd register: endpoind: %s register fail, err: %v", er.cnf.ServerInfo.LocalEndpoint, err)
 					continue
 				}
-				er.cnf.Logger.Info("etcd register: endpoind: %s register succ", er.cnf.ServerInfo.LocalEndpoint)
+				er.cnf.Logger.Infof("etcd register: endpoind: %s register succ", er.cnf.ServerInfo.LocalEndpoint)
 			}
 		}
 	}
@@ -129,7 +129,7 @@ func NewEtcdDiscover(cnf *DiscoverConfig) (ServiceDiscover, error) {
 	}
 
 	if cnf.Logger == nil {
-		cnf.Logger = defaultLogger
+		cnf.Logger = &logger{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -162,12 +162,12 @@ func (ed *etcdDiscover) Watch(callback WatchCallback) {
 					continue
 				}
 
-				_, endpoint := splitKey(string(event.Kv.Key))
+				_, nodeid := splitKey(string(event.Kv.Key))
 				switch event.Type {
 				case clientv3.EventTypePut:
-					callback.AddOrUpdate(endpoint, event.Kv.Value)
+					callback.AddOrUpdate(nodeid, event.Kv.Value)
 				case clientv3.EventTypeDelete:
-					callback.Delete(endpoint)
+					callback.Delete(nodeid)
 				}
 			}
 		}
@@ -180,12 +180,13 @@ func (ed *etcdDiscover) getAllService(callback WatchCallback) {
 	result, err := ed.client.Get(ctx, ed.prefix, clientv3.WithPrefix())
 	if err != nil {
 		ed.cnf.Logger.Warnf("etcd discover: etcd-client Get() fail, err: %v", err)
+		return
 	}
 
 	for _, kv := range result.Kvs {
-		_, endpoint := splitKey(string(kv.Key))
-		if err := callback.AddOrUpdate(endpoint, kv.Value); err != nil {
-			ed.cnf.Logger.Warnf("etcd discover: endpoint: %s AddOrUpdate fail, err: %v", endpoint, err)
+		_, nodeid := splitKey(string(kv.Key))
+		if err := callback.AddOrUpdate(nodeid, kv.Value); err != nil {
+			ed.cnf.Logger.Warnf("etcd discover: endpoint: %s AddOrUpdate fail, err: %v", nodeid, err)
 		}
 	}
 }

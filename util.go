@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math/rand"
+	"net"
 	"os"
 	"path"
 	"reflect"
@@ -258,4 +259,23 @@ func isNil(i interface{}) bool {
 		return vi.IsNil()
 	}
 	return i == nil
+}
+
+// getLocalIps 获取本机ip地址（ipv4）
+func getLocalIps() ([]string, error) {
+	interfaceAddr, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+
+	ips := []string{}
+	for _, addr := range interfaceAddr {
+		ipNet, isVailIpNet := addr.(*net.IPNet)
+		if isVailIpNet && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				ips = append(ips, ipNet.IP.String())
+			}
+		}
+	}
+	return ips, nil
 }

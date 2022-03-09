@@ -1,21 +1,16 @@
 package zrpc
 
 import (
+	"fmt"
+
 	"github.com/panjf2000/ants/v2"
 	"github.com/pborman/uuid"
 )
 
-var DefaultNode = Node{
-	ServiceName:     getServerName(),
-	NodeID:          uuid.NewUUID().String(),
-	LocalEndpoint:   "tcp://0.0.0.0:8080",
-	ClusterEndpoint: "tcp://0.0.0.0:8081",
-	StateEndpoint:   "tcp://0.0.0.0:8082",
-	IsIdle:          true,
-}
-
 var (
-	defaultLogger Logger
+	ipaddr string
+
+	DefaultNode Node
 
 	defaultRPCInstance *RPCInstance
 
@@ -24,9 +19,22 @@ var (
 	svcMultiplexer *SvcMultiplexer
 )
 
-// SetLogger 设置默认 logger
-func SetLogger(l Logger) {
-	defaultLogger = l
+func init() {
+	ips, err := getLocalIps()
+	if err != nil || len(ips) == 0 {
+		ipaddr = "0.0.0.0"
+	} else {
+		ipaddr = ips[0]
+	}
+
+	DefaultNode = Node{
+		ServiceName:     getServerName(),
+		NodeID:          uuid.NewUUID().String(),
+		LocalEndpoint:   fmt.Sprintf("tcp://%s:8080", ipaddr),
+		ClusterEndpoint: fmt.Sprintf("tcp://%s:8081", ipaddr),
+		StateEndpoint:   fmt.Sprintf("tcp://%s:8082", ipaddr),
+		IsIdle:          true,
+	}
 }
 
 // RegisterServer 注册服务

@@ -247,8 +247,8 @@ func (m *SvcMultiplexer) SelectPeerNode() (n Node, err error) {
 	return
 }
 
-func (m *SvcMultiplexer) AddOrUpdate(endpoint string, metadata []byte) error {
-	if endpoint == m.nodeState.LocalEndpoint {
+func (m *SvcMultiplexer) AddOrUpdate(nodeid string, metadata []byte) error {
+	if nodeid == m.nodeState.NodeID {
 		return nil
 	}
 
@@ -279,13 +279,13 @@ func (m *SvcMultiplexer) AddOrUpdate(endpoint string, metadata []byte) error {
 	return nil
 }
 
-func (m *SvcMultiplexer) Delete(endpoint string) {
-	if m.nodeState.LocalEndpoint == endpoint {
+func (m *SvcMultiplexer) Delete(nodeid string) {
+	if m.nodeState.NodeID == nodeid {
 		return
 	}
 	all := m.broker.AllPeerNode()
 	for _, node := range all {
-		if node.LocalEndpoint == endpoint {
+		if node.NodeID == nodeid {
 			m.broker.DelPeerNode(&node)
 		}
 	}
@@ -297,15 +297,17 @@ func (m *SvcMultiplexer) Run() {
 	if m.opts.RegisterDiscover != nil {
 		// 注册服务
 		go m.opts.RegisterDiscover.Register()
-		defer m.opts.RegisterDiscover.Deregister()
 		// 服务发现
 		go m.opts.RegisterDiscover.Watch(m)
-		defer m.opts.RegisterDiscover.Stop()
 	}
 	m.dispatcher()
 }
 
 func (m *SvcMultiplexer) Close() {
+	if m.opts.RegisterDiscover != nil {
+		m.opts.RegisterDiscover.Deregister()
+		m.opts.RegisterDiscover.Stop()
+	}
 	m.timer.Stop()
 	m.broker.Close(nil) // TODO
 	close(m.c)
