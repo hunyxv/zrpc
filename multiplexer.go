@@ -269,7 +269,7 @@ func (m *SvcMultiplexer) AddOrUpdate(nodeid string, metadata []byte) error {
 			n.ClusterEndpoint == node.LocalEndpoint ||
 			n.ClusterEndpoint == node.ClusterEndpoint ||
 			n.StateEndpoint == node.StateEndpoint {
-			*updateNode = n
+			updateNode = &n
 		}
 	}
 	if updateNode != nil {
