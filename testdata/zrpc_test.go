@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -113,6 +114,7 @@ func (s *SayHello) StreamFunc(ctx context.Context, total int, rw io.ReadWriteClo
 		}
 	}()
 
+	flusher := rw.(http.Flusher)
 	for i := 0; i < total; i += 5 {
 		var j int
 		for ; j < 5 && j < total-i; j++ {
@@ -128,7 +130,7 @@ func (s *SayHello) StreamFunc(ctx context.Context, total int, rw io.ReadWriteClo
 			data = append(data, '\r', '\n')
 			rw.Write(data)
 		}
-
+		flusher.Flush()
 		for j != 0 {
 			<-c
 			j--

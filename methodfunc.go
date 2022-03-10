@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"reflect"
 	"sync"
@@ -458,6 +459,7 @@ type readWriteCloser struct {
 	io.Reader
 	io.Writer
 	io.Closer
+	http.Flusher
 }
 
 type StreamFunc struct {
@@ -491,14 +493,14 @@ func NewStreamFunc(m *Method) (IMethodFunc, error) {
 
 		r:    readCloser,
 		w:    writerCloser,
-		bufw: bufio.NewWriter(writerCloser),
 		lock: spinlock.NewSpinLock(),
 	}
-
+	sf.bufw = bufio.NewWriter(sf)
 	sf.rw = &readWriteCloser{
-		Reader: bufio.NewReader(readCloser),
-		Writer: sf, // 写入需要及时发送出去
-		Closer: sf,
+		Reader:  bufio.NewReader(readCloser),
+		Writer:  sf.bufw, // 写入需要及时发送出去
+		Closer:  sf,
+		Flusher: sf,
 	}
 	return sf, nil
 }
@@ -559,18 +561,21 @@ func (sf *StreamFunc) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
+func (sf *StreamFunc) Flush() {
+	sf.bufw.Flush()
+}
+
 func (sf *StreamFunc) Next(data [][]byte) {
 	raw := data[0]
 	var i int
 	for i != len(raw) {
-		n, err := sf.bufw.Write(raw[i:])
+		n, err := sf.w.Write(raw[i:])
 		if err != nil && err != io.EOF {
 			sf.reply.SendError(sf.req, err)
 			return
 		}
 		i += n
 	}
-	sf.bufw.Flush()
 }
 
 func (sf *StreamFunc) End() {
@@ -580,7 +585,7 @@ func (sf *StreamFunc) End() {
 		return
 	}
 	sf.reqStreamIsEnd = true
-	sf.bufw.Flush()
+	//sf.bufw.Flush()
 	sf.cancel()
 	sf.w.Close()
 }
@@ -590,6 +595,7 @@ func (sf *StreamFunc) Close() error {
 		return nil
 	}
 
+	sf.bufw.Flush()
 	var header = make(Header, len(sf.req.Header))
 	for k, v := range sf.req.Header {
 		for _, i := range v {
