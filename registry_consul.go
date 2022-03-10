@@ -124,7 +124,6 @@ func (cr *consulRegister) Register() {
 	if err != nil {
 		cr.cnf.Logger.Warnf("consul register: registry fail, err: %v", err)
 	}
-	return
 }
 
 // Deregister 注销节点
@@ -139,7 +138,6 @@ type consulDiscover struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	key    string
 	cnf    *DiscoverConfig
 	client *consulapi.Client
 }

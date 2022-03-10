@@ -3,6 +3,7 @@ module github.com/hunyxv/zrpc
 go 1.17
 
 require (
+	github.com/go-zookeeper/zk v1.0.2
 	github.com/hashicorp/consul/api v1.12.0
 	github.com/hunyxv/utils v0.0.0-20220221134715-bf42549b7954
 	github.com/panjf2000/ants/v2 v2.4.7

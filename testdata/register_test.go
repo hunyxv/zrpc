@@ -59,6 +59,26 @@ func newRegisterDiscover() (zrpc.RegisterDiscover, error) {
 			return nil, err
 		}
 		return zrpc.NewRegisterDiscover(registry, discover), nil
+	case "zk":
+		registry, err := zrpc.NewZookeeperRegister(&zrpc.RegisterConfig{
+			Registries:      []string{"127.0.0.1:2181"},
+			ServicePrefix:   "/zrpc",
+			HeartBeatPeriod: 5 * time.Second,
+			ServerInfo:      zrpc.DefaultNode,
+		})
+		if err != nil {
+			fmt.Println(err)
+			return nil, err
+		}
+		discover, err := zrpc.NewZookeeperDiscover(&zrpc.DiscoverConfig{
+			Registries:    []string{"127.0.0.1:2181"},
+			ServicePrefix: "/zrpc",
+			ServiceName:   zrpc.DefaultNode.ServiceName,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return zrpc.NewRegisterDiscover(registry, discover), nil
 	}
 	return nil, errors.New("unknow err")
 }
