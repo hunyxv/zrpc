@@ -1,20 +1,32 @@
 package zrpc
 
 import (
+	"encoding/json"
+	"fmt"
 	"sync/atomic"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+type Endpoint struct {
+	Scheme string
+	Host   string
+	Port   int
+}
+
+func (e Endpoint) String() string {
+	return fmt.Sprintf("%s://%s:%d", e.Scheme, e.Host, e.Port)
+}
+
 // Node 节点信息
 type Node struct {
-	ServiceName     string `json:"service_name" msgpack:"service_name"`
-	NodeID          string `json:"nodeid" msgpack:"nodeid"`
-	LocalEndpoint   string `json:"local_endpoint" msgpack:"local_endpoint"`     // 本地 endpoint
-	ClusterEndpoint string `json:"cluster_endpoint" msgpack:"cluster_endpoint"` // 集群 endpoint
-	StateEndpoint   string `json:"state_endpoint" msgpack:"state_endpoint"`     // 状态 endpoint
-	IsIdle          bool   `json:"is_idle" msgpack:"is_idle"`
+	ServiceName     string   `json:"service_name" msgpack:"service_name"`
+	NodeID          string   `json:"nodeid" msgpack:"nodeid"`
+	LocalEndpoint   Endpoint `json:"local_endpoint" msgpack:"local_endpoint"`     // 本地 endpoint
+	ClusterEndpoint Endpoint `json:"cluster_endpoint" msgpack:"cluster_endpoint"` // 集群 endpoint
+	StateEndpoint   Endpoint `json:"state_endpoint" msgpack:"state_endpoint"`     // 状态 endpoint
+	IsIdle          bool     `json:"is_idle" msgpack:"is_idle"`
 }
 
 type NodeState struct {
@@ -73,12 +85,40 @@ func (s *NodeState) isIdle() (bool, bool) {
 	return s.IsIdle, false
 }
 
-func (s *NodeState) Marshal() []byte {
+func (s *NodeState) MarshalMsgpack() ([]byte, error) {
 	s.IsIdle, _ = s.isIdle()
-	b, _ := msgpack.Marshal(s.Node)
-	return b
+	node := *(s.Node)
+	ips, err := getLocalIps()
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) > 0 {
+		node.LocalEndpoint.Host = ips[0]
+		node.ClusterEndpoint.Host = ips[0]
+		node.StateEndpoint.Host = ips[0]
+	}
+	return msgpack.Marshal(node)
 }
 
-func (s *NodeState) Unmarshal(b []byte) {
-	msgpack.Unmarshal(b, &(s.Node))
+func (s *NodeState) UnmarshalMsgpack(b []byte) error {
+	return msgpack.Unmarshal(b, &(s.Node))
+}
+
+func (s *NodeState) MarshalJSON() ([]byte, error) {
+	s.IsIdle, _ = s.isIdle()
+	node := *(s.Node)
+	ips, err := getLocalIps()
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) > 0 {
+		node.LocalEndpoint.Host = ips[0]
+		node.ClusterEndpoint.Host = ips[0]
+		node.StateEndpoint.Host = ips[0]
+	}
+	return json.Marshal(node)
+}
+
+func (s *NodeState) UnmarshalJSON(b []byte) error {
+	return msgpack.Unmarshal(b, &(s.Node))
 }

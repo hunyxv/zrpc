@@ -55,9 +55,9 @@ func TestBroker(t *testing.T) {
 		Node: &zrpc.Node{
 			ServiceName:     "test",
 			NodeID:          "test-1",
-			LocalEndpoint:   "tcp://127.0.0.1:8080",
-			ClusterEndpoint: "tcp://127.0.0.1:8081",
-			StateEndpoint:   "tcp://127.0.0.1:8082",
+			LocalEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10080},
+			ClusterEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10081},
+			StateEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10082},
 		},
 	}
 
@@ -70,9 +70,9 @@ func TestBroker(t *testing.T) {
 		Node: &zrpc.Node{
 			ServiceName:     "test",
 			NodeID:          "test-2",
-			LocalEndpoint:   "tcp://127.0.0.1:9090",
-			ClusterEndpoint: "tcp://127.0.0.1:9091",
-			StateEndpoint:   "tcp://127.0.0.1:9092",
+			LocalEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10090},
+			ClusterEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10091},
+			StateEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10092},
 		},
 	}
 

@@ -52,12 +52,12 @@ func TestReqRepFunc(t *testing.T) {
 	}
 	soc.SetIdentity(id)
 
-	err = soc.Connect("tcp://127.0.0.1:8080")
+	err = soc.Connect("tcp://127.0.0.1:10080")
 	if err != nil {
 		panic(err)
 	}
 	defer soc.Close()
-	defer soc.Disconnect("tcp://127.0.0.1:8080")
+	defer soc.Disconnect("tcp://127.0.0.1:10080")
 
 	now := time.Now()
 	// 提取出链路追踪所需数据，并绑定到 zrpc.Context

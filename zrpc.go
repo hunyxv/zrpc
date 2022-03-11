@@ -1,8 +1,6 @@
 package zrpc
 
 import (
-	"fmt"
-
 	"github.com/panjf2000/ants/v2"
 	"github.com/pborman/uuid"
 )
@@ -30,9 +28,9 @@ func init() {
 	DefaultNode = Node{
 		ServiceName:     getServerName(),
 		NodeID:          uuid.NewUUID().String(),
-		LocalEndpoint:   fmt.Sprintf("tcp://%s:8080", ipaddr),
-		ClusterEndpoint: fmt.Sprintf("tcp://%s:8081", ipaddr),
-		StateEndpoint:   fmt.Sprintf("tcp://%s:8082", ipaddr),
+		LocalEndpoint:   Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10080},
+		ClusterEndpoint: Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10081},
+		StateEndpoint:   Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10082},
 		IsIdle:          true,
 	}
 }

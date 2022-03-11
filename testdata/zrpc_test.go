@@ -164,9 +164,9 @@ func TestRunserverBusy(t *testing.T) {
 	server := zrpc.NewSvcMultiplexer(rpcInstance, zrpc.WithLogger(&logger{}), zrpc.WithNodeInfo(zrpc.Node{
 		ServiceName:     "222222",
 		NodeID:          "22222222-2222-2222-2222-222222222222", // 为了测试，节点 id 设置为 222...
-		LocalEndpoint:   "tcp://0.0.0.0:9080",
-		ClusterEndpoint: "tcp://0.0.0.0:9081",
-		StateEndpoint:   "tcp://0.0.0.0:9082",
+		LocalEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10090},
+		ClusterEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10091},
+		StateEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10092},
 		IsIdle:          false, // 表示本节点已经满载了
 	}))
 	zrpc.DefaultNode.NodeID = "11111111-1111-1111-1111-111111111111"
@@ -211,12 +211,12 @@ func TestReqRepFunc(t *testing.T) {
 		panic(err)
 	}
 	soc.SetIdentity(id)
-	err = soc.Connect("tcp://127.0.0.1:9080")
+	err = soc.Connect("tcp://127.0.0.1:10090")
 	if err != nil {
 		panic(err)
 	}
 	defer soc.Close()
-	defer soc.Disconnect("tcp://127.0.0.1:9080")
+	defer soc.Disconnect("tcp://127.0.0.1:10090")
 
 	for i := 0; i < 10; i++ {
 		now := time.Now()
@@ -270,12 +270,12 @@ func TestStreamReqFunc(t *testing.T) {
 		panic(err)
 	}
 	soc.SetIdentity(id)
-	err = soc.Connect("tcp://127.0.0.1:9080")
+	err = soc.Connect("tcp://127.0.0.1:10090")
 	if err != nil {
 		panic(err)
 	}
 	defer soc.Close()
-	defer soc.Disconnect("tcp://127.0.0.1:9080")
+	defer soc.Disconnect("tcp://127.0.0.1:10090")
 
 	now := time.Now()
 	ctx := &zrpc.Context{
@@ -368,12 +368,12 @@ func TestStreamRespFunc(t *testing.T) {
 		panic(err)
 	}
 	soc.SetIdentity(id)
-	err = soc.Connect("tcp://127.0.0.1:9080")
+	err = soc.Connect("tcp://127.0.0.1:10090")
 	if err != nil {
 		panic(err)
 	}
 	defer soc.Close()
-	defer soc.Disconnect("tcp://127.0.0.1:9080")
+	defer soc.Disconnect("tcp://127.0.0.1:10090")
 
 	now := time.Now()
 	ctx := &zrpc.Context{
@@ -450,13 +450,15 @@ func TestStreamFunc(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
+	soc.SetSndhwm(100000)
+	soc.SetRcvhwm(100000)
 	soc.SetIdentity(id)
-	err = soc.Connect("tcp://127.0.0.1:9080")
+	err = soc.Connect("tcp://127.0.0.1:10080")
 	if err != nil {
 		panic(err)
 	}
 	defer soc.Close()
-	defer soc.Disconnect("tcp://127.0.0.1:9080")
+	defer soc.Disconnect("tcp://127.0.0.1:10080")
 
 	now := time.Now()
 	ctx := &zrpc.Context{
@@ -559,6 +561,7 @@ func TestStreamFunc(t *testing.T) {
 		}
 
 		_, err = soc.SendMessage(rawPack)
+
 		if err != nil {
 			panic(err)
 		}

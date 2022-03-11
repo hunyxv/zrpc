@@ -2,7 +2,6 @@ package zrpc
 
 import (
 	"context"
-	"log"
 
 	"github.com/vmihailenco/msgpack/v5"
 	"go.opentelemetry.io/otel"
@@ -41,7 +40,6 @@ func (ctx *Context) MarshalMsgpack() ([]byte, error) {
 
 	return msgpack.Marshal(payload)
 }
-
 
 func (ctx *Context) UnmarshalMsgpack(b []byte) error {
 	if ctx.Context == nil {
@@ -87,7 +85,6 @@ func InjectTrace2ctx(ctx context.Context) context.Context {
 		payload = map[string]string{}
 	}
 	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(payload))
-	log.Println(payload)
 
 	valueCtx := context.WithValue(ctx, TracePayloadKey, payload)
 	return valueCtx

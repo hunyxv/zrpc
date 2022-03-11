@@ -112,14 +112,12 @@ func TestRunserverWithRegistry2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ipaddr, _ := getLocalIps()
-
 	node := zrpc.Node{
 		ServiceName:     "testdata",
 		NodeID:          "22222222-2222-2222-2222-222222222222",
-		LocalEndpoint:   fmt.Sprintf("tcp://%s:9080", ipaddr),
-		ClusterEndpoint: fmt.Sprintf("tcp://%s:9081", ipaddr),
-		StateEndpoint:   fmt.Sprintf("tcp://%s:9082", ipaddr),
+		LocalEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10090},
+		ClusterEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10091},
+		StateEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10092},
 		IsIdle:          true,
 	}
 

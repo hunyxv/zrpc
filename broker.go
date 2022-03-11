@@ -81,7 +81,7 @@ type Broker interface {
 	// SetBrokerMode 设置 broker 运行模式
 	SetBrokerMode(m mode)
 	// PublishNodeState 发布本节点状态
-	PublishNodeState()
+	PublishNodeState() error
 	// Run
 	Run()
 	// Close 关闭
@@ -114,7 +114,7 @@ func NewBroker(state *NodeState, hbInterval time.Duration, logger Logger) (Broke
 		return nil, err
 	}
 
-	localfe, err := newSocket(state.NodeID, zmq.ROUTER, frontend, state.LocalEndpoint)
+	localfe, err := newSocket(state.NodeID, zmq.ROUTER, frontend, state.LocalEndpoint.String())
 	if err != nil {
 		manager.Close()
 		return nil, err
@@ -291,7 +291,7 @@ type peerNodeManager struct {
 }
 
 func newPeerNodeManager(state *NodeState, hbInterval time.Duration) (*peerNodeManager, error) {
-	clusterfe, err := newSocket(state.NodeID, zmq.ROUTER, frontend, state.ClusterEndpoint)
+	clusterfe, err := newSocket(state.NodeID, zmq.ROUTER, frontend, state.ClusterEndpoint.String())
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +310,7 @@ func newPeerNodeManager(state *NodeState, hbInterval time.Duration) (*peerNodeMa
 	}
 	statefe.Subscribe("")
 
-	statebe, err := newSocket(state.NodeID, zmq.PUB, backend, state.StateEndpoint)
+	statebe, err := newSocket(state.NodeID, zmq.PUB, backend, state.StateEndpoint.String())
 	if err != nil {
 		clusterfe.Close()
 		clusterbe.Close()
@@ -341,8 +341,8 @@ func (peer *peerNodeManager) AddPeerNode(node *Node) {
 		state := &NodeState{Node: node}
 		state.expiration = time.Now().Add(peer.hbInterval * 3)
 		peer.peerState[node.NodeID] = state
-		peer.clusterbe.Connect(node.ClusterEndpoint) // 连接到这个节点
-		peer.statefe.Connect(node.StateEndpoint)     // 订阅该节点状态
+		peer.clusterbe.Connect(node.ClusterEndpoint.String()) // 连接到这个节点
+		peer.statefe.Connect(node.StateEndpoint.String())     // 订阅该节点状态
 	}
 }
 
@@ -352,8 +352,8 @@ func (peer *peerNodeManager) DelPeerNode(node *Node) {
 	defer peer.lock.Unlock()
 	if _, ok := peer.peerState[node.NodeID]; ok {
 		delete(peer.peerState, node.NodeID)
-		peer.clusterbe.Disconnect(node.ClusterEndpoint)
-		peer.statefe.Disconnect(node.StateEndpoint)
+		peer.clusterbe.Disconnect(node.ClusterEndpoint.String())
+		peer.statefe.Disconnect(node.StateEndpoint.String())
 	}
 }
 
@@ -385,16 +385,20 @@ func (peer *peerNodeManager) ForwardToPeerNode(to string, pack *Pack) {
 }
 
 // PublishNodeState 发布本节点状态
-func (peer *peerNodeManager) PublishNodeState() {
+func (peer *peerNodeManager) PublishNodeState() error {
 	pack := &Pack{
 		Identity: peer.NodeState.NodeID,
 	}
 	pack.SetMethodName(SYNCSTATE)
 	// 空闲&&暂停状态
-	state := peer.NodeState.Marshal()
+	state, err := peer.NodeState.MarshalMsgpack()
+	if err != nil {
+		return err
+	}
 	pack.Args = append(pack.Args, state)
 	bytePack, _ := msgpack.Marshal(pack)
 	peer.statebe.Send() <- [][]byte{bytePack}
+	return nil
 }
 
 // refreshNodeStatus 接收订阅的节点状态，刷新节点信息（主要是空闲繁忙状态）

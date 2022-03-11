@@ -3,9 +3,7 @@ package zrpc
 import (
 	"context"
 	"encoding/json"
-	"net"
-	"net/url"
-	"strconv"
+	"fmt"
 	"strings"
 
 	consulapi "github.com/hashicorp/consul/api"
@@ -37,9 +35,9 @@ func NewConsulRegister(cnf *RegisterConfig) (ServiceRegister, error) {
 	metadata := map[string]string{
 		"service_name":     cnf.ServerInfo.ServiceName,
 		"nodeid":           cnf.ServerInfo.NodeID,
-		"local_endpoint":   cnf.ServerInfo.LocalEndpoint,
-		"cluster_endpoint": cnf.ServerInfo.ClusterEndpoint,
-		"state_endpoint":   cnf.ServerInfo.StateEndpoint,
+		"local_endpoint":   cnf.ServerInfo.LocalEndpoint.String(),
+		"cluster_endpoint": cnf.ServerInfo.ClusterEndpoint.String(),
+		"state_endpoint":   cnf.ServerInfo.StateEndpoint.String(),
 	}
 
 	key := strings.Join([]string{
@@ -59,68 +57,53 @@ func NewConsulRegister(cnf *RegisterConfig) (ServiceRegister, error) {
 
 // Register 注册节点
 func (cr *consulRegister) Register() {
-	u, err := url.Parse(cr.cnf.ServerInfo.LocalEndpoint)
-	if err != nil {
-		cr.cnf.Logger.Warnf("consul register: localendpoing parse fail, err: %v", err)
-		return
-	}
-	host, portStr, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		cr.cnf.Logger.Warnf("consul register: , invalid host:port: %s err: %v", u.Host, err)
-		return
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		cr.cnf.Logger.Warnf("consul register: , invalid port: %s err: %v", u.Port(), err)
-		return
+	var host string
+	hosts, _ := getLocalIps()
+	if len(hosts) > 0 {
+		host = hosts[0]
+	} else {
+		host = cr.cnf.ServerInfo.LocalEndpoint.Host
 	}
 
 	registration := &consulapi.AgentServiceRegistration{
 		Kind:    consulapi.ServiceKindTypical,
 		Address: host,
-		Port:    port,
+		Port:    cr.cnf.ServerInfo.LocalEndpoint.Port,
 		Meta:    cr.metadata,
 		ID:      cr.cnf.ServerInfo.NodeID,
 		Name:    cr.cnf.ServerInfo.ServiceName,
 		Tags:    []string{"zrpc"},
 	}
 	checkEndpoints := make([]*consulapi.AgentServiceCheck, 0, 3)
+	addr := fmt.Sprintf("%s:%d", host, cr.cnf.ServerInfo.LocalEndpoint.Port)
 	checkEndpoints = append(checkEndpoints, &consulapi.AgentServiceCheck{
 		Name:                           "local-endpoint",
-		TCP:                            u.Host,
+		TCP:                            addr,
 		Interval:                       "7s",
 		Timeout:                        "3s",
 		DeregisterCriticalServiceAfter: "30s",
 	})
 
-	u, err = url.Parse(cr.cnf.ServerInfo.ClusterEndpoint)
-	if err != nil {
-		cr.cnf.Logger.Warnf("consul register: clusterendpoing parse fail, err: %v", err)
-		return
-	}
+	addr = fmt.Sprintf("%s:%d", host, cr.cnf.ServerInfo.ClusterEndpoint.Port)
 	checkEndpoints = append(checkEndpoints, &consulapi.AgentServiceCheck{
 		Name:                           "cluster-endpoint",
-		TCP:                            u.Host,
+		TCP:                            addr,
 		Interval:                       "7s",
 		Timeout:                        "3s",
 		DeregisterCriticalServiceAfter: "30s",
 	})
 
-	u, err = url.Parse(cr.cnf.ServerInfo.StateEndpoint)
-	if err != nil {
-		cr.cnf.Logger.Warnf("consul register: stateendpoing parse fail, err: %v", err)
-		return
-	}
+	addr = fmt.Sprintf("%s:%d", host, cr.cnf.ServerInfo.StateEndpoint.Port)
 	checkEndpoints = append(checkEndpoints, &consulapi.AgentServiceCheck{
 		Name:                           "state-endpoint",
-		TCP:                            u.Host,
+		TCP:                            addr,
 		Interval:                       "7s",
 		Timeout:                        "3s",
 		DeregisterCriticalServiceAfter: "30s",
 	})
 
 	registration.Checks = checkEndpoints
-	err = cr.client.Agent().ServiceRegister(registration)
+	err := cr.client.Agent().ServiceRegister(registration)
 	if err != nil {
 		cr.cnf.Logger.Warnf("consul register: registry fail, err: %v", err)
 	}
