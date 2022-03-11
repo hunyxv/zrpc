@@ -49,6 +49,7 @@ func (zr *zookeeperRegister) Register() {
 	}
 
 	if !exist {
+		// 创建临时节点
 		_, err = zr.client.Create(zr.key(), zr.metadata, zk.FlagEphemeral, zk.WorldACL(zk.PermAll))
 		if err != nil {
 			zr.cnf.Logger.Warnf("zookeeper register: path %s create fail, err: %v", zr.key(), err)
@@ -117,7 +118,8 @@ type zookeeperDiscover struct {
 	prefix string
 	cnf    *DiscoverConfig
 
-	client *zk.Conn
+	client  *zk.Conn
+	version map[string]int32
 }
 
 func NewZookeeperDiscover(cnf *DiscoverConfig) (ServiceDiscover, error) {
@@ -131,9 +133,10 @@ func NewZookeeperDiscover(cnf *DiscoverConfig) (ServiceDiscover, error) {
 	}
 
 	return &zookeeperDiscover{
-		prefix: strings.Join([]string{cnf.ServicePrefix, cnf.ServiceName}, "/"),
-		cnf:    cnf,
-		client: zkClient,
+		prefix:  strings.Join([]string{cnf.ServicePrefix, cnf.ServiceName}, "/"),
+		cnf:     cnf,
+		client:  zkClient,
+		version: map[string]int32{},
 	}, nil
 }
 
@@ -144,6 +147,9 @@ func (zd *zookeeperDiscover) Watch(callback WatchCallback) {
 	for {
 		children, _, eventch, err := zd.client.ChildrenW(zd.node())
 		if err != nil {
+			if err == zk.ErrConnectionClosed {
+				return
+			}
 			zd.cnf.Logger.Warnf("zookeeper discover: watch path:%s fail, err: %v", zd.node(), err)
 			time.Sleep(time.Second * 3)
 			continue
@@ -159,11 +165,13 @@ func (zd *zookeeperDiscover) Watch(callback WatchCallback) {
 				if !exist {
 					callback.Delete(nodeid)
 				} else {
-					data, err := zd.getData(path)
+					data, version, err := zd.getData(path)
 					if err != nil {
 						continue
 					}
-					callback.Delete(nodeid)
+					if v, ok := zd.version[path]; ok && v != version {
+						callback.Delete(nodeid)
+					}
 					callback.AddOrUpdate(nodeid, data)
 				}
 			}
@@ -179,18 +187,21 @@ func (zd *zookeeperDiscover) getAllService(callback WatchCallback) {
 	}
 
 	for _, child := range children {
-		data, err := zd.getData(zd.key(child))
+		path := zd.key(child)
+		data, version, err := zd.getData(path)
 		if err != nil {
 			zd.cnf.Logger.Warnf("zookeeper discover: get path:%s fail, err: %v", zd.node(), err)
 			return
 		}
+
+		zd.version[path] = version
 		callback.AddOrUpdate(child, data)
 	}
 }
 
-func (zd *zookeeperDiscover) getData(path string) ([]byte, error) {
-	data, _, err := zd.client.Get(path)
-	return data, err
+func (zd *zookeeperDiscover) getData(path string) ([]byte, int32, error) {
+	data, s, err := zd.client.Get(path)
+	return data, s.Version, err
 }
 
 func (zd *zookeeperDiscover) node() string {
