@@ -6,8 +6,6 @@ import (
 )
 
 var (
-	ipaddr string
-
 	DefaultNode Node
 
 	defaultRPCInstance *RPCInstance
@@ -18,13 +16,6 @@ var (
 )
 
 func init() {
-	ips, err := getLocalIps()
-	if err != nil || len(ips) == 0 {
-		ipaddr = "0.0.0.0"
-	} else {
-		ipaddr = ips[0]
-	}
-
 	DefaultNode = Node{
 		ServiceName:     getServerName(),
 		NodeID:          uuid.NewUUID().String(),

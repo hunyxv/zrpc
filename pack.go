@@ -79,9 +79,9 @@ func (p *Pack) MethodName() string {
 	return p.Get(METHOD_NAME)
 }
 
-func (p *Pack) Marshal(args []interface{}) (pack []byte, err error) {
-	if p.Header == nil || !p.Header.Has("message_id") {
-		p.Set("message_id", NewMessageID())
+func (p *Pack) MarshalMsgpack(args []interface{}) (pack []byte, err error) {
+	if p.Header == nil || !p.Header.Has(MESSAGEID) {
+		p.Set(MESSAGEID, NewMessageID())
 	}
 
 	if len(args) != 0 {
@@ -98,6 +98,6 @@ func (p *Pack) Marshal(args []interface{}) (pack []byte, err error) {
 	return
 }
 
-func (p *Pack) Unmarshal(b []byte) error {
+func (p *Pack) UnmarshalMsgpack(b []byte) error {
 	return msgpack.Unmarshal(b, &p)
 }
