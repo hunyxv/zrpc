@@ -8,6 +8,7 @@ import (
 	"log"
 	"path"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -15,6 +16,7 @@ var (
 	// errors
 	ErrInvalidServer     = errors.New("zrpc: register server err: invalid server")
 	ErrNotImplements     = errors.New("zrpc: the type not implements the given interface")
+	ErrTooFewReturn      = errors.New("zrpc: too few return values")
 	ErrInvalidResultType = errors.New("zrpc: the last return value must be error")
 	ErrInvalidParamType  = errors.New("zrpc: the first param must be Context")
 	ErrTooFewParam       = errors.New("zrpc: too few parameters")
@@ -35,7 +37,7 @@ const (
 	Stream
 )
 
-type Method struct {
+type method struct {
 	methodName  string
 	mode        FuncMode
 	srv         reflect.Value
@@ -46,7 +48,7 @@ type Method struct {
 
 type Server struct {
 	ServerName string
-	methods    map[string]*Method // 方法
+	methods    map[string]*method // 方法
 	instance   reflect.Value      // server 实例
 }
 
@@ -81,14 +83,14 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 
 	s := &Server{
 		ServerName: name,
-		methods:    make(map[string]*Method),
+		methods:    make(map[string]*method),
 		instance:   rv,
 	}
 	for i := 0; i < rv.NumMethod(); i++ {
-		var method = new(Method)
+		var method = new(method)
 		t_method := t.Method(i)
 		method.srv = s.instance // MethodFunc 的第一个参数
-		method.methodName = path.Join(name, t_method.Name)
+		method.methodName = strings.Join([]string{name, t_method.Name}, "/")
 		method.method = rv.Method(i)
 		methodType := t_method.Type
 		numOfParams := methodType.NumIn()
@@ -96,6 +98,9 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 			return ErrTooFewParam
 		}
 		numOfResult := methodType.NumOut()
+		if numOfResult == 0 {
+			return ErrTooFewReturn
+		}
 		// 从第一个开始，跳过第0个参数
 		for j := 1; j < numOfParams; j++ {
 			method.paramTypes = append(method.paramTypes, methodType.In(j))
@@ -136,7 +141,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 
 // GenerateExecFunc 查找并返回可执行函数
 // 	name: /{servername}/methodname
-func (rpc *RPCInstance) GenerateExecFunc(name string) (IMethodFunc, error) {
+func (rpc *RPCInstance) GenerateExecFunc(name string) (methodFunc, error) {
 	rpc.rwMutex.RLock()
 	defer rpc.rwMutex.RUnlock()
 	serverName, methodName := path.Split(name)
@@ -149,5 +154,5 @@ func (rpc *RPCInstance) GenerateExecFunc(name string) (IMethodFunc, error) {
 	if !ok {
 		return nil, fmt.Errorf("%s server no %s method", serverName, methodName)
 	}
-	return NewMethodFunc(method)
+	return newMethodFunc(method)
 }

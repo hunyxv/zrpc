@@ -20,44 +20,44 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type IMethodFunc interface {
+type methodFunc interface {
 	FuncMode() FuncMode
-	Call(p *Pack, r IReply)
+	Call(p *Pack, r iReply)
 	Next(params [][]byte)
 	End()
 	Release() error
 }
 
-type IReply interface {
+type iReply interface {
 	Reply(p *Pack) error
 	SendError(pack *Pack, e error)
 }
 
-func NewMethodFunc(method *Method) (IMethodFunc, error) {
+func newMethodFunc(method *method) (methodFunc, error) {
 	switch method.mode {
 	case ReqRep:
-		return NewReqRepFunc(method), nil
+		return newReqRepFunc(method), nil
 	case StreamReqRep:
-		return NewStreamReqRepFunc(method)
+		return newStreamReqRepFunc(method)
 	case ReqStreamRep:
-		return NewReqStreamRepFunc(method), nil
+		return newReqStreamRepFunc(method), nil
 	case Stream:
-		return NewStreamFunc(method)
+		return newStreamFunc(method)
 	}
 	return nil, fmt.Errorf("unknown function type: %+v", method.mode)
 }
 
-var _ IMethodFunc = (*MethodFunc)(nil)
+var _ methodFunc = (*_methodFunc)(nil)
 
-type MethodFunc struct {
+type _methodFunc struct {
 	ctx    context.Context
 	cancel context.CancelFunc
-	Method *Method // function
-	reply  IReply
+	Method *method // function
+	reply  iReply
 	span   trace.Span
 }
 
-func (f *MethodFunc) unmarshalCtx(b []byte) (context.Context, error) {
+func (f *_methodFunc) unmarshalCtx(b []byte) (context.Context, error) {
 	if len(b) == 0 {
 		return context.Background(), nil
 	}
@@ -77,7 +77,7 @@ func (f *MethodFunc) unmarshalCtx(b []byte) (context.Context, error) {
 	return ctx, nil
 }
 
-func (f *MethodFunc) assembleParams(params [][]byte) (l int, paramVals []reflect.Value, err error) {
+func (f *_methodFunc) assembleParams(params [][]byte) (l int, paramVals []reflect.Value, err error) {
 	l = len(f.Method.paramTypes)
 	if len(params) != l {
 		err = fmt.Errorf("not enough arguments in call to %s", f.Method.methodName)
@@ -118,7 +118,7 @@ func (f *MethodFunc) assembleParams(params [][]byte) (l int, paramVals []reflect
 	return
 }
 
-func (f *MethodFunc) call(params []reflect.Value) (result [][]byte, err error) {
+func (f *_methodFunc) call(params []reflect.Value) (result [][]byte, err error) {
 	defer func() {
 		if e := recover(); e != nil {
 			err = errors.WithStack(fmt.Errorf("%+v", e))
@@ -150,35 +150,33 @@ func (f *MethodFunc) call(params []reflect.Value) (result [][]byte, err error) {
 	return
 }
 
-func (f *MethodFunc) setStatus(code codes.Code, desc string) {
+func (f *_methodFunc) setStatus(code codes.Code, desc string) {
 	if f.span != nil {
 		f.span.SetStatus(code, desc)
 	}
 }
 
-func (f *MethodFunc) spanEnd() {
+func (f *_methodFunc) spanEnd() {
 	if f.span != nil {
 		f.span.End()
 	}
 }
 
-func (f *MethodFunc) FuncMode() FuncMode     { return -1 }
-func (f *MethodFunc) Call(p *Pack, r IReply) {}
-func (f *MethodFunc) Next([][]byte)          {}
-func (f *MethodFunc) End()                   {}
-func (f *MethodFunc) Release() error         { return nil }
-
-var _ IMethodFunc = (*ReqRepFunc)(nil)
+func (f *_methodFunc) FuncMode() FuncMode     { return -1 }
+func (f *_methodFunc) Call(p *Pack, r iReply) {}
+func (f *_methodFunc) Next([][]byte)          {}
+func (f *_methodFunc) End()                   {}
+func (f *_methodFunc) Release() error         { return nil }
 
 // ReqRepFunc 请求应答类型函数
-type ReqRepFunc struct {
-	*MethodFunc
+type reqRepFunc struct {
+	*_methodFunc
 }
 
-func NewReqRepFunc(m *Method) IMethodFunc {
+func newReqRepFunc(m *method) methodFunc {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &ReqRepFunc{
-		MethodFunc: &MethodFunc{
+	return &reqRepFunc{
+		_methodFunc: &_methodFunc{
 			ctx:    ctx,
 			cancel: cancel,
 			Method: m,
@@ -186,12 +184,12 @@ func NewReqRepFunc(m *Method) IMethodFunc {
 	}
 }
 
-func (f *ReqRepFunc) FuncMode() FuncMode {
+func (f *reqRepFunc) FuncMode() FuncMode {
 	return f.Method.mode
 }
 
 // Call 将 func 放入 pool 中运行
-func (f *ReqRepFunc) Call(p *Pack, r IReply) {
+func (f *reqRepFunc) Call(p *Pack, r iReply) {
 	f.reply = r
 
 	// 反序列化参数
@@ -217,14 +215,14 @@ func (f *ReqRepFunc) Call(p *Pack, r IReply) {
 	f.reply.Reply(resp)
 }
 
-func (f *ReqRepFunc) Release() error {
+func (f *reqRepFunc) Release() error {
 	f.cancel()
 	return nil
 }
 
 // StreamReqRepFunc 流式请求类型函数
-type StreamReqRepFunc struct {
-	*MethodFunc
+type streamReqRepFunc struct {
+	*_methodFunc
 
 	req *Pack
 	r   io.ReadCloser
@@ -235,7 +233,7 @@ type StreamReqRepFunc struct {
 	lock     sync.Locker
 }
 
-func NewStreamReqRepFunc(m *Method) (IMethodFunc, error) {
+func newStreamReqRepFunc(m *method) (methodFunc, error) {
 	// 暂时不知道好用不好用 os.Pipe , 替代品为 rwchannel
 	readCloser, writerCloser, err := os.Pipe()
 	if err != nil {
@@ -243,8 +241,8 @@ func NewStreamReqRepFunc(m *Method) (IMethodFunc, error) {
 	}
 	buf := bufio.NewReadWriter(bufio.NewReader(readCloser), bufio.NewWriter(writerCloser))
 	ctx, cancel := context.WithCancel(context.Background())
-	return &StreamReqRepFunc{
-		MethodFunc: &MethodFunc{
+	return &streamReqRepFunc{
+		_methodFunc: &_methodFunc{
 			ctx:    ctx,
 			cancel: cancel,
 			Method: m,
@@ -258,12 +256,12 @@ func NewStreamReqRepFunc(m *Method) (IMethodFunc, error) {
 	}, nil
 }
 
-func (srf *StreamReqRepFunc) FuncMode() FuncMode {
+func (srf *streamReqRepFunc) FuncMode() FuncMode {
 	return srf.Method.mode
 }
 
-func (srf *StreamReqRepFunc) Call(p *Pack, ireplye IReply) {
-	srf.reply = ireplye
+func (srf *streamReqRepFunc) Call(p *Pack, iReplye iReply) {
+	srf.reply = iReplye
 	srf.req = p
 
 	// 反序列化参数
@@ -292,7 +290,7 @@ func (srf *StreamReqRepFunc) Call(p *Pack, ireplye IReply) {
 	srf.reply.Reply(resp)
 }
 
-func (srf *StreamReqRepFunc) Next(data [][]byte) {
+func (srf *streamReqRepFunc) Next(data [][]byte) {
 	raw := data[0]
 	var i int
 	for i != len(raw) {
@@ -305,13 +303,13 @@ func (srf *StreamReqRepFunc) Next(data [][]byte) {
 	}
 }
 
-func (srf *StreamReqRepFunc) End() {
+func (srf *streamReqRepFunc) End() {
 	if err := srf.Release(); err != nil {
 		srf.reply.SendError(srf.req, err)
 	}
 }
 
-func (srf *StreamReqRepFunc) Release() error {
+func (srf *streamReqRepFunc) Release() error {
 	if srf.isClosed {
 		return nil
 	}
@@ -338,8 +336,8 @@ type writeCloser struct {
 }
 
 // ReqStreamRepFunc 流式响应类型函数
-type ReqStreamRepFunc struct {
-	*MethodFunc
+type reqStreamRepFunc struct {
+	*_methodFunc
 
 	req         *Pack
 	writeCloser *writeCloser
@@ -348,10 +346,10 @@ type ReqStreamRepFunc struct {
 	lock     sync.Locker
 }
 
-func NewReqStreamRepFunc(m *Method) IMethodFunc {
+func newReqStreamRepFunc(m *method) methodFunc {
 	ctx, cancel := context.WithCancel(context.Background())
-	rsf := &ReqStreamRepFunc{
-		MethodFunc: &MethodFunc{
+	rsf := &reqStreamRepFunc{
+		_methodFunc: &_methodFunc{
 			ctx:    ctx,
 			cancel: cancel,
 			Method: m,
@@ -367,11 +365,11 @@ func NewReqStreamRepFunc(m *Method) IMethodFunc {
 	return rsf
 }
 
-func (rsf *ReqStreamRepFunc) FuncMode() FuncMode {
+func (rsf *reqStreamRepFunc) FuncMode() FuncMode {
 	return rsf.Method.mode
 }
 
-func (rsf *ReqStreamRepFunc) Call(p *Pack, r IReply) {
+func (rsf *reqStreamRepFunc) Call(p *Pack, r iReply) {
 	// 参数最后一个是 writer，只有一个err返回值
 	rsf.req = p
 	rsf.reply = r
@@ -402,7 +400,7 @@ func (rsf *ReqStreamRepFunc) Call(p *Pack, r IReply) {
 	rsf.reply.Reply(resp)
 }
 
-func (rsf *ReqStreamRepFunc) Write(b []byte) (int, error) {
+func (rsf *reqStreamRepFunc) Write(b []byte) (int, error) {
 	var header = make(Header, len(rsf.req.Header))
 	for k, v := range rsf.req.Header {
 		for _, i := range v {
@@ -422,11 +420,11 @@ func (rsf *ReqStreamRepFunc) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (rsf *ReqStreamRepFunc) Close() error {
+func (rsf *reqStreamRepFunc) Close() error {
 	return rsf.Release()
 }
 
-func (rsf *ReqStreamRepFunc) Release() error {
+func (rsf *reqStreamRepFunc) Release() error {
 	if rsf.isClosed {
 		return nil
 	}
@@ -462,8 +460,8 @@ type readWriteCloser struct {
 	http.Flusher
 }
 
-type StreamFunc struct {
-	*MethodFunc
+type streamFunc struct {
+	*_methodFunc
 
 	req *Pack
 
@@ -477,15 +475,15 @@ type StreamFunc struct {
 	lock           sync.Locker
 }
 
-func NewStreamFunc(m *Method) (IMethodFunc, error) {
+func newStreamFunc(m *method) (methodFunc, error) {
 	readCloser, writerCloser, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sf := &StreamFunc{
-		MethodFunc: &MethodFunc{
+	sf := &streamFunc{
+		_methodFunc: &_methodFunc{
 			ctx:    ctx,
 			cancel: cancel,
 			Method: m,
@@ -505,11 +503,11 @@ func NewStreamFunc(m *Method) (IMethodFunc, error) {
 	return sf, nil
 }
 
-func (sf *StreamFunc) FuncMode() FuncMode {
+func (sf *streamFunc) FuncMode() FuncMode {
 	return sf.Method.mode
 }
 
-func (sf *StreamFunc) Call(p *Pack, r IReply) {
+func (sf *streamFunc) Call(p *Pack, r iReply) {
 	// 参数最后一个是 writer，只有一个err返回值
 	sf.req = p
 	sf.reply = r
@@ -541,7 +539,7 @@ func (sf *StreamFunc) Call(p *Pack, r IReply) {
 	sf.reply.Reply(resp)
 }
 
-func (sf *StreamFunc) Write(b []byte) (int, error) {
+func (sf *streamFunc) Write(b []byte) (int, error) {
 	var header = make(Header, len(sf.req.Header))
 	for k, v := range sf.req.Header {
 		for _, i := range v {
@@ -561,11 +559,11 @@ func (sf *StreamFunc) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (sf *StreamFunc) Flush() {
+func (sf *streamFunc) Flush() {
 	sf.bufw.Flush()
 }
 
-func (sf *StreamFunc) Next(data [][]byte) {
+func (sf *streamFunc) Next(data [][]byte) {
 	raw := data[0]
 	var i int
 	for i != len(raw) {
@@ -578,7 +576,7 @@ func (sf *StreamFunc) Next(data [][]byte) {
 	}
 }
 
-func (sf *StreamFunc) End() {
+func (sf *streamFunc) End() {
 	sf.lock.Lock()
 	defer sf.lock.Unlock()
 	if sf.reqStreamIsEnd {
@@ -590,7 +588,7 @@ func (sf *StreamFunc) End() {
 	sf.w.Close()
 }
 
-func (sf *StreamFunc) Close() error {
+func (sf *streamFunc) Close() error {
 	if sf.isClose {
 		return nil
 	}
@@ -611,7 +609,7 @@ func (sf *StreamFunc) Close() error {
 	return sf.reply.Reply(data)
 }
 
-func (sf *StreamFunc) Release() error {
+func (sf *streamFunc) Release() error {
 	sf.End()
 	defer sf.cancel()
 	return sf.Close()

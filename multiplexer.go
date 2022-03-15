@@ -14,7 +14,7 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-var _ IReply = (*SvcMultiplexer)(nil)
+var _ iReply = (*SvcMultiplexer)(nil)
 
 type SvcMultiplexer struct {
 	logger         Logger
@@ -193,7 +193,7 @@ func (m *SvcMultiplexer) dispatcher() {
 			case STREAM: // 流式请求中
 				mf, ok := m.activeChannels.Load(msgid)
 				if ok {
-					if methodFunc, ok := mf.(IMethodFunc); ok {
+					if methodFunc, ok := mf.(methodFunc); ok {
 						methodFunc.Next(pack.Args)
 					}
 				} else {
@@ -210,7 +210,7 @@ func (m *SvcMultiplexer) dispatcher() {
 				mf, ok := m.activeChannels.LoadAndDelete(msgid)
 				if ok {
 					m.submitTask(func() {
-						if methodFunc, ok := mf.(IMethodFunc); ok {
+						if methodFunc, ok := mf.(methodFunc); ok {
 							methodFunc.End()
 						}
 					})

@@ -115,7 +115,7 @@ func (m *activeMethodFuncs) Store(key interface{}, value interface{}) {
 		t: m.timer.Submit(m.timeoutPeriod, func() {
 			if value, ok := m.Map.LoadAndDelete(key); ok {
 				v := value.(*_Value)
-				if f, ok := v.v.(IMethodFunc); ok {
+				if f, ok := v.v.(methodFunc); ok {
 					f.Release()
 				}
 			}
