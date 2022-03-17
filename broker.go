@@ -11,22 +11,16 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-/*
-	客户端 -- 服务端: DEALER -- ROUTER
-	集群前端：DEALER
-	集群后端：ROUTER
-*/
-
 const (
 	// stage
 	REQUEST    = string(rune(iota + 1)) // 请求包
 	REPLY                               // 响应包，与 req 对应的 回复
 	STREAM                              // stream
 	STREAM_END                          // stream 结束
+	ERROR                               // 异常包
 
 	// method name
 	HEARTBEAT  = string(rune(iota + 1000)) // 心跳包
-	ERROR                                  // 异常包
 	SYNCSTATE                              // 同步节点状态
 	DISCONNECT                             // 通知让客户端断开连接
 )
@@ -39,16 +33,7 @@ var (
 		DISCONNECT: "DISCONNECT",
 		ERROR:      "ERROR",
 	}
-
-	hbPacketWithNodeState []byte
-	hbPacket              []byte
 )
-
-func init() {
-	hbPacket, _ = msgpack.Marshal(&Pack{
-		Header: Header{METHOD_NAME: []string{HEARTBEAT}},
-	})
-}
 
 type mode int
 
@@ -103,7 +88,7 @@ type broker struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	taskChan chan *Pack
-	localfe  *socket // local frontend
+	localfe  *Socket // local frontend
 	state    *NodeState
 	logger   Logger
 }
@@ -114,21 +99,11 @@ func NewBroker(state *NodeState, hbInterval time.Duration, logger Logger) (Broke
 		return nil, err
 	}
 
-	localfe, err := newSocket(state.NodeID, zmq.ROUTER, frontend, state.LocalEndpoint.String())
+	localfe, err := NewSocket(state.NodeID, zmq.ROUTER, Frontend, state.LocalEndpoint.String())
 	if err != nil {
 		manager.Close()
 		return nil, err
 	}
-
-	nodeSate, err := msgpack.Marshal(state)
-	if err != nil {
-		return nil, err
-	}
-	heartbeatPacket := &Pack{
-		Args: [][]byte{nodeSate},
-	}
-	heartbeatPacket.SetMethodName(HEARTBEAT)
-	hbPacketWithNodeState, _ = msgpack.Marshal(heartbeatPacket)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &broker{
@@ -169,6 +144,20 @@ func (b *broker) SetBrokerMode(m mode) {
 // Run 开始接收来自客户端的 pack，并定时向平行节点发送心跳包
 //  从 cluster 后端接收回复，然后将其转发到客户端或请求来源节点
 func (b *broker) Run() {
+	nodeSate, err := msgpack.Marshal(b.state)
+	if err != nil {
+		return
+	}
+	heartbeatPacket := &Pack{
+		Args: [][]byte{nodeSate},
+	}
+	heartbeatPacket.SetMethodName(HEARTBEAT)
+	hbPacketWithNodeState, _ := msgpack.Marshal(heartbeatPacket)
+
+	hbPacket, _ := msgpack.Marshal(&Pack{
+		Header: Header{METHOD_NAME: []string{HEARTBEAT}},
+	})
+
 	tick := time.NewTicker(b.hbInterval)
 	defer tick.Stop()
 	for {
@@ -284,25 +273,25 @@ type peerNodeManager struct {
 	peerState  map[string]*NodeState // nodeid:NodeState
 	lock       sync.RWMutex
 
-	clusterfe *socket
-	clusterbe *socket
-	statefe   *socket
-	statebe   *socket
+	clusterfe *Socket
+	clusterbe *Socket
+	statefe   *Socket
+	statebe   *Socket
 }
 
 func newPeerNodeManager(state *NodeState, hbInterval time.Duration) (*peerNodeManager, error) {
-	clusterfe, err := newSocket(state.NodeID, zmq.ROUTER, frontend, state.ClusterEndpoint.String())
+	clusterfe, err := NewSocket(state.NodeID, zmq.ROUTER, Frontend, state.ClusterEndpoint.String())
 	if err != nil {
 		return nil, err
 	}
 
-	clusterbe, err := newSocket(state.NodeID, zmq.ROUTER, backend, "")
+	clusterbe, err := NewSocket(state.NodeID, zmq.ROUTER, Backend, "")
 	if err != nil {
 		clusterbe.Close()
 		return nil, err
 	}
 
-	statefe, err := newSocket(state.NodeID, zmq.SUB, frontend, "")
+	statefe, err := NewSocket(state.NodeID, zmq.SUB, Frontend, "")
 	if err != nil {
 		clusterfe.Close()
 		clusterbe.Close()
@@ -310,7 +299,7 @@ func newPeerNodeManager(state *NodeState, hbInterval time.Duration) (*peerNodeMa
 	}
 	statefe.Subscribe("")
 
-	statebe, err := newSocket(state.NodeID, zmq.PUB, backend, state.StateEndpoint.String())
+	statebe, err := NewSocket(state.NodeID, zmq.PUB, Backend, state.StateEndpoint.String())
 	if err != nil {
 		clusterfe.Close()
 		clusterbe.Close()

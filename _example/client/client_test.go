@@ -3,18 +3,51 @@ package main
 import (
 	"context"
 	"errors"
+	"example"
 	"fmt"
 	"log"
 	"testing"
 	"time"
 
 	"github.com/hunyxv/zrpc"
+	zrpcCli "github.com/hunyxv/zrpc/client"
 	zmq "github.com/pebbe/zmq4"
 	"github.com/vmihailenco/msgpack/v5"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	tracesdk "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	"go.opentelemetry.io/otel/trace"
 )
+
+const (
+	service     = "trace-demo"
+	environment = "production"
+	id          = 1
+)
+
+func tracerProvider(url string) (*tracesdk.TracerProvider, error) {
+	// Create the Jaeger exporter
+	exp, err := jaeger.New(jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(url)))
+	if err != nil {
+		return nil, err
+	}
+	tp := tracesdk.NewTracerProvider(
+		// Always be sure to batch in production.
+		tracesdk.WithBatcher(exp),
+		// Record information about this application in a Resource.
+		tracesdk.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceNameKey.String(service),
+			attribute.String("environment", environment),
+			attribute.Int64("ID", id),
+		)),
+	)
+	return tp, nil
+}
 
 // TestReqRepFunc 测试请求响应型方法
 func TestReqRepFunc(t *testing.T) {
@@ -107,7 +140,6 @@ func TestReqRepFunc(t *testing.T) {
 	t.Logf("takes %s", time.Since(now))
 }
 
-
 func client(soc *zmq.Socket, pack *zrpc.Pack) [][]byte {
 	rawPack, err := msgpack.Marshal(&pack)
 	if err != nil {
@@ -127,4 +159,45 @@ func client(soc *zmq.Socket, pack *zrpc.Pack) [][]byte {
 	}
 	//log.Println("msg: ", msg, string(msg[0]))
 	return msg
+}
+
+func TestReqRepCli(t *testing.T) {
+	cli, err := zrpcCli.NewDirectClient(zrpcCli.ServerInfo{
+		ServerName:    "example",
+		NodeID:        "1111-111111-11111111",
+		LocalEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10080},
+		StateEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10082},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go cli.Run()
+	defer cli.Close()
+
+	proxy := &example.SayHelloProxy{}
+	// 对代理对象函数进行替换
+	err = cli.Decorator("sayhello", proxy, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second)
+
+	// 调用
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := proxy.Hello(ctx)
+	if err != nil {
+		t.Log("测试返回错误： ", err)
+	}
+
+	t.Log(resp)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	resp2, err := proxy.Hello2(ctx2, &example.Resp{Name: "XiaoMing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%+v", resp2.Name)
 }

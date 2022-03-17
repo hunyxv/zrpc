@@ -1,15 +1,15 @@
 module example
 
-go 1.17
+go 1.18
 
 require (
-	github.com/hunyxv/zrpc v0.0.0-00010101000000-000000000000
+	github.com/hunyxv/zrpc v0.0.0-20220315034624-ec7d530b4a84
 	github.com/pebbe/zmq4 v1.2.8
 	github.com/vmihailenco/msgpack/v5 v5.3.5
-	go.opentelemetry.io/otel v1.4.1
-	go.opentelemetry.io/otel/exporters/jaeger v1.4.1
-	go.opentelemetry.io/otel/sdk v1.4.1
-	go.opentelemetry.io/otel/trace v1.4.1
+	go.opentelemetry.io/otel v1.5.0
+	go.opentelemetry.io/otel/exporters/jaeger v1.5.0
+	go.opentelemetry.io/otel/sdk v1.5.0
+	go.opentelemetry.io/otel/trace v1.5.0
 )
 
 require (
@@ -22,7 +22,7 @@ require (
 	github.com/go-zookeeper/zk v1.0.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
-	github.com/google/uuid v1.3.0 // indirect
+	github.com/google/uuid v1.1.2 // indirect
 	github.com/hashicorp/consul/api v1.12.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.1 // indirect
 	github.com/hashicorp/go-hclog v0.12.0 // indirect
@@ -35,7 +35,7 @@ require (
 	github.com/mattn/go-isatty v0.0.12 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.1.2 // indirect
-	github.com/panjf2000/ants/v2 v2.4.8 // indirect
+	github.com/panjf2000/ants/v2 v2.4.7 // indirect
 	github.com/pborman/uuid v1.2.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
@@ -54,3 +54,5 @@ require (
 )
 
 replace github.com/hunyxv/zrpc => ../
+
+replace github.com/hunyxv/zrpc/client => ../client

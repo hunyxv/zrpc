@@ -16,7 +16,7 @@ import (
 
 var rdType = flag.String("rd", "etcd", "registry discover type")
 
-func newRegisterDiscover() (zrpc.RegisterDiscover, error) {
+func newRegisterDiscover(node zrpc.Node) (zrpc.RegisterDiscover, error) {
 	fmt.Println(*rdType)
 	switch *rdType {
 	case "etcd":
@@ -24,7 +24,7 @@ func newRegisterDiscover() (zrpc.RegisterDiscover, error) {
 			Registries:      []string{"127.0.0.1:2379"},
 			ServicePrefix:   "/zrpc",
 			HeartBeatPeriod: 5 * time.Second,
-			ServerInfo:      zrpc.DefaultNode,
+			ServerInfo:      node,
 		})
 		if err != nil {
 			return nil, err
@@ -32,7 +32,7 @@ func newRegisterDiscover() (zrpc.RegisterDiscover, error) {
 		discover, err := zrpc.NewEtcdDiscover(&zrpc.DiscoverConfig{
 			Registries:    []string{"127.0.0.1:2379"},
 			ServicePrefix: "/zrpc",
-			ServiceName:   zrpc.DefaultNode.ServiceName,
+			ServiceName:   node.ServiceName,
 		})
 		if err != nil {
 			return nil, err
@@ -44,7 +44,7 @@ func newRegisterDiscover() (zrpc.RegisterDiscover, error) {
 			Registries:      []string{"127.0.0.1:8500"},
 			ServicePrefix:   "/zrpc",
 			HeartBeatPeriod: 5 * time.Second,
-			ServerInfo:      zrpc.DefaultNode,
+			ServerInfo:      node,
 		})
 		if err != nil {
 			fmt.Println(err)
@@ -53,7 +53,7 @@ func newRegisterDiscover() (zrpc.RegisterDiscover, error) {
 		discover, err := zrpc.NewConsulDiscover(&zrpc.DiscoverConfig{
 			Registries:    []string{"127.0.0.1:8500"},
 			ServicePrefix: "/zrpc",
-			ServiceName:   zrpc.DefaultNode.ServiceName,
+			ServiceName:   node.ServiceName,
 		})
 		if err != nil {
 			return nil, err
@@ -64,7 +64,7 @@ func newRegisterDiscover() (zrpc.RegisterDiscover, error) {
 			Registries:      []string{"127.0.0.1:2181"},
 			ServicePrefix:   "/zrpc",
 			HeartBeatPeriod: 5 * time.Second,
-			ServerInfo:      zrpc.DefaultNode,
+			ServerInfo:      node,
 		})
 		if err != nil {
 			fmt.Println(err)
@@ -73,7 +73,7 @@ func newRegisterDiscover() (zrpc.RegisterDiscover, error) {
 		discover, err := zrpc.NewZookeeperDiscover(&zrpc.DiscoverConfig{
 			Registries:    []string{"127.0.0.1:2181"},
 			ServicePrefix: "/zrpc",
-			ServiceName:   zrpc.DefaultNode.ServiceName,
+			ServiceName:   node.ServiceName,
 		})
 		if err != nil {
 			return nil, err
@@ -85,20 +85,21 @@ func newRegisterDiscover() (zrpc.RegisterDiscover, error) {
 
 func TestRunserverWithRegistry1(t *testing.T) {
 	var i *ISayHello
-	err := zrpc.RegisterServer("sayhello/", &SayHello{}, i)
+	err := zrpc.RegisterServer("/sayhello", &SayHello{}, i)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// 为了测试，节点 id 设置为 111...
-	zrpc.DefaultNode.NodeID = "11111111-1111-1111-1111-111111111111"
+	node := zrpc.DefaultNode
+	node.NodeID = "11111111-1111-1111-1111-111111111111"
 
-	rd, err := newRegisterDiscover()
+	rd, err := newRegisterDiscover(node)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	go zrpc.Run(zrpc.WithRegisterDiscover(rd))
+	go zrpc.Run(zrpc.WithRegisterDiscover(rd), zrpc.WithNodeInfo(node))
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch
@@ -107,7 +108,7 @@ func TestRunserverWithRegistry1(t *testing.T) {
 
 func TestRunserverWithRegistry2(t *testing.T) {
 	var i *ISayHello
-	err := zrpc.RegisterServer("sayhello/", &SayHello{}, i)
+	err := zrpc.RegisterServer("/sayhello", &SayHello{}, i)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,9 +122,35 @@ func TestRunserverWithRegistry2(t *testing.T) {
 		IsIdle:          true,
 	}
 
-	zrpc.DefaultNode = node
+	rd, err := newRegisterDiscover(node)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	rd, err := newRegisterDiscover()
+	go zrpc.Run(zrpc.WithRegisterDiscover(rd), zrpc.WithNodeInfo(node))
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	<-ch
+	zrpc.Close()
+}
+
+func TestRunserverWithRegistry3(t *testing.T) {
+	var i *ISayHello
+	err := zrpc.RegisterServer("/sayhello", &SayHello{}, i)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node := zrpc.Node{
+		ServiceName:     "testdata",
+		NodeID:          "33333333-3333-3333-3333-333333333333",
+		LocalEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10100},
+		ClusterEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10101},
+		StateEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10102},
+		IsIdle:          true,
+	}
+
+	rd, err := newRegisterDiscover(node)
 	if err != nil {
 		t.Fatal(err)
 	}

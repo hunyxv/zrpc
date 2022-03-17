@@ -92,7 +92,7 @@ func (m *SvcMultiplexer) SendError(pack *Pack, e error) {
 		Stage:    ERROR,
 		Args:     [][]byte{errRaw},
 	}
-	errp.SetMethodName(ERROR)
+	// errp.SetMethodName(pack.MethodName())
 	if err := m.Reply(errp); err != nil {
 		log.Printf("reply message fail: %v", err)
 	}

@@ -3,6 +3,7 @@ package zrpc
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"sync"
@@ -11,14 +12,13 @@ import (
 	"time"
 
 	"github.com/hunyxv/utils/timer"
-	"github.com/pborman/uuid"
 )
 
 func TestMyMap(t *testing.T) {
 	timerWheel, _ := timer.NewHashedWheelTimer(context.Background())
 	go timerWheel.Start()
 	defer timerWheel.Stop()
-	m := newMyMap(timerWheel, 10 * time.Second)
+	m := newMyMap(timerWheel, 10*time.Second)
 	m.Store("testkey1", "aaaaaa")
 
 	v, ok := m.Load("testkey")
@@ -137,7 +137,15 @@ func TestRWChanel2(t *testing.T) {
 	time.Sleep(time.Second)
 }
 
-func TestGetServerName(t *testing.T) {
-	t.Log(getServerName())
-	t.Log(string(uuid.NewUUID()))
+func TestGetMarshalNode(t *testing.T) {
+	node := DefaultNode
+	data, err := json.Marshal(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(data)
+
+	var node2 Node
+	err = json.Unmarshal(data, &node2)
+	t.Log(node2)
 }

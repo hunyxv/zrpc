@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"path"
 	"reflect"
 	"strings"
 	"sync"
@@ -144,7 +143,9 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 func (rpc *RPCInstance) GenerateExecFunc(name string) (methodFunc, error) {
 	rpc.rwMutex.RLock()
 	defer rpc.rwMutex.RUnlock()
-	serverName, methodName := path.Split(name)
+	nameSlice := strings.SplitN(name, "/", 2) //path.Split(name)
+	log.Println(nameSlice)
+	serverName, methodName := nameSlice[0], nameSlice[1]
 	server, ok := rpc.servers[serverName]
 	if !ok {
 		return nil, fmt.Errorf("no %s server", serverName)

@@ -2,7 +2,6 @@ package zrpc
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -79,25 +78,39 @@ func (p *Pack) MethodName() string {
 	return p.Get(METHOD_NAME)
 }
 
-func (p *Pack) MarshalMsgpack(args []interface{}) (pack []byte, err error) {
+func (p *Pack) MarshalMsgpack() (pack []byte, err error) {
 	if p.Header == nil || !p.Header.Has(MESSAGEID) {
 		p.Set(MESSAGEID, NewMessageID())
 	}
 
-	if len(args) != 0 {
-		for _, v := range args {
-			arg, err := msgpack.Marshal(&v)
-			if err != nil {
-				return nil, fmt.Errorf("pack marshal args: %v", err)
-			}
-			p.Args = append(p.Args, arg)
-		}
-	}
-
-	pack, err = msgpack.Marshal(&p)
+	pack, err = msgpack.Marshal(struct {
+		Identity string   `msgpack:"identity"`
+		Stage    string   `msgpack:"method"`
+		Header   Header   `msgpack:"head"`
+		Args     [][]byte `msgpack:"args"`
+	}{
+		Identity: p.Identity,
+		Stage:    p.Stage,
+		Header:   p.Header,
+		Args:     p.Args,
+	})
 	return
 }
 
-func (p *Pack) UnmarshalMsgpack(b []byte) error {
-	return msgpack.Unmarshal(b, &p)
-}
+// func (p *Pack) UnmarshalMsgpack(b []byte) error {
+// 	data := struct{
+// 		Identity string   `msgpack:"identity"`
+// 		Stage    string   `msgpack:"method"`
+// 		Header   Header   `msgpack:"head"`
+// 		Args     [][]byte `msgpack:"args"`
+// 	}{}
+// 	err := msgpack.Unmarshal(b, &data)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	p.Identity = data.Identity
+// 	p.Stage = data.Stage
+// 	p.Header = data.Header
+// 	p.Args = data.Args
+// 	return nil
+// }

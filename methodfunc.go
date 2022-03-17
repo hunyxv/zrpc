@@ -59,10 +59,15 @@ type _methodFunc struct {
 
 func (f *_methodFunc) unmarshalCtx(b []byte) (context.Context, error) {
 	if len(b) == 0 {
-		return context.Background(), nil
+		ctx, cancel := context.WithCancel(context.Background())
+		f.ctx = ctx
+		f.cancel = cancel
+		return ctx, nil
 	}
 
-	ctx := NewContext(f.ctx)
+	ctx := NewContext()
+	f.ctx = ctx
+	f.cancel = ctx.Cancel
 	if err := msgpack.Unmarshal(b, &ctx); err != nil {
 		return nil, err
 	}
@@ -174,11 +179,8 @@ type reqRepFunc struct {
 }
 
 func newReqRepFunc(m *method) methodFunc {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &reqRepFunc{
 		_methodFunc: &_methodFunc{
-			ctx:    ctx,
-			cancel: cancel,
 			Method: m,
 		},
 	}
@@ -240,11 +242,8 @@ func newStreamReqRepFunc(m *method) (methodFunc, error) {
 		return nil, err
 	}
 	buf := bufio.NewReadWriter(bufio.NewReader(readCloser), bufio.NewWriter(writerCloser))
-	ctx, cancel := context.WithCancel(context.Background())
 	return &streamReqRepFunc{
 		_methodFunc: &_methodFunc{
-			ctx:    ctx,
-			cancel: cancel,
 			Method: m,
 		},
 
@@ -347,11 +346,8 @@ type reqStreamRepFunc struct {
 }
 
 func newReqStreamRepFunc(m *method) methodFunc {
-	ctx, cancel := context.WithCancel(context.Background())
 	rsf := &reqStreamRepFunc{
 		_methodFunc: &_methodFunc{
-			ctx:    ctx,
-			cancel: cancel,
 			Method: m,
 		},
 
@@ -481,11 +477,8 @@ func newStreamFunc(m *method) (methodFunc, error) {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	sf := &streamFunc{
 		_methodFunc: &_methodFunc{
-			ctx:    ctx,
-			cancel: cancel,
 			Method: m,
 		},
 

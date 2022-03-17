@@ -13,8 +13,8 @@ import (
 type socMode int
 
 const (
-	frontend socMode = iota + 1 // 前端
-	backend                     // 后端
+	Frontend socMode = iota + 1 // 前端
+	Backend                     // 后端
 )
 
 type command string
@@ -27,7 +27,7 @@ const (
 	_UNSUBSCRIBE = command("unsubscribe") // 取消订阅
 )
 
-type socket struct {
+type Socket struct {
 	id          string
 	soctype     zmq.Type
 	socket      *zmq.Socket
@@ -43,7 +43,7 @@ type socket struct {
 	mode    socMode
 }
 
-func newSocket(id string, t zmq.Type, mode socMode, endpoint string) (*socket, error) {
+func NewSocket(id string, t zmq.Type, mode socMode, endpoint string) (*Socket, error) {
 	soc, err := zmq.NewSocket(t)
 	if err != nil {
 		return nil, err
@@ -52,7 +52,7 @@ func newSocket(id string, t zmq.Type, mode socMode, endpoint string) (*socket, e
 	soc.SetTcpKeepalive(1)       // 启用 keepalive
 	soc.SetTcpKeepaliveIdle(120) // 空闲间隔 120s
 
-	if mode == frontend {
+	if mode == Frontend {
 		if t != zmq.SUB { // zmq.sub 特别处理，前端表示接收数据，zmq.SUB 是订阅接收不用 Bind
 			err := soc.Bind(endpoint)
 			if err != nil {
@@ -61,7 +61,7 @@ func newSocket(id string, t zmq.Type, mode socMode, endpoint string) (*socket, e
 		}
 	}
 
-	if mode == backend {
+	if mode == Backend {
 		if t == zmq.PUB { // zmq.pub 特别处理，使用 PUB 向其他节点推送状态。
 			err := soc.Bind(endpoint)
 			if err != nil {
@@ -70,7 +70,7 @@ func newSocket(id string, t zmq.Type, mode socMode, endpoint string) (*socket, e
 		}
 	}
 
-	s := &socket{
+	s := &Socket{
 		id:          uuid.NewRandom().String(),
 		soctype:     t,
 		mode:        mode,
@@ -86,6 +86,7 @@ func newSocket(id string, t zmq.Type, mode socMode, endpoint string) (*socket, e
 	go s.sendLoop()
 	go func() {
 		for {
+			// TODO: zeromq 错误特殊处理
 			err := <-s.errChan
 			log.Println("zmq err: ", s.endpoint, err)
 		}
@@ -94,7 +95,7 @@ func newSocket(id string, t zmq.Type, mode socMode, endpoint string) (*socket, e
 	return s, nil
 }
 
-func (s *socket) mainLoop() {
+func (s *Socket) mainLoop() {
 	// 用于接收 send 消息
 	localPull, err := zmq.NewSocket(zmq.PULL)
 	if err != nil {
@@ -141,7 +142,7 @@ func (s *socket) mainLoop() {
 				}
 				switch command(cmd[0]) {
 				case _CLOSE: // 关闭
-					if s.mode == backend || s.soctype == zmq.SUB {
+					if s.mode == Backend || s.soctype == zmq.SUB {
 						for endpoint := range s.endpoints {
 							s.socket.Disconnect(endpoint)
 						}
@@ -150,7 +151,7 @@ func (s *socket) mainLoop() {
 					s.socket.Close()
 					return
 				case _DISCONNECT: // 断开到某个端点的连接
-					if s.mode == backend || s.soctype == zmq.SUB {
+					if s.mode == Backend || s.soctype == zmq.SUB {
 						endpoint := cmd[1]
 						if err := s.socket.Disconnect(endpoint); err != nil {
 							s.errChan <- err
@@ -158,7 +159,7 @@ func (s *socket) mainLoop() {
 					}
 					pipe.SendMessage("ok")
 				case _CONNECT: // 建立到某个断点的连接
-					if s.mode == backend || s.soctype == zmq.SUB {
+					if s.mode == Backend || s.soctype == zmq.SUB {
 						endpoint := cmd[1]
 						err := s.socket.Connect(endpoint)
 						if err != nil {
@@ -208,7 +209,7 @@ func (s *socket) mainLoop() {
 	}
 }
 
-func (s *socket) sendLoop() {
+func (s *Socket) sendLoop() {
 	localPush, err := zmq.NewSocket(zmq.PUSH)
 	if err != nil {
 		s.errChan <- err
@@ -262,17 +263,17 @@ func (s *socket) sendLoop() {
 	}
 }
 
-func (s *socket) Recv() <-chan [][]byte {
+func (s *Socket) Recv() <-chan [][]byte {
 	return s.recvChan
 }
 
-func (s *socket) Send() chan<- [][]byte {
+func (s *Socket) Send() chan<- [][]byte {
 	return s.sendChan
 }
 
 // Connect 连接到端点 endpoint （仅后端, zmq.SUB除外）
-func (s *socket) Connect(endpoint string) {
-	if s.mode != backend && s.soctype != zmq.SUB {
+func (s *Socket) Connect(endpoint string) {
+	if s.mode != Backend && s.soctype != zmq.SUB {
 		return
 	}
 	s.lock.Lock()
@@ -282,8 +283,8 @@ func (s *socket) Connect(endpoint string) {
 }
 
 // Disconnect 断开到端点 endpoint 的连接（仅后端）
-func (s *socket) Disconnect(endpoint string) {
-	if s.mode != backend {
+func (s *Socket) Disconnect(endpoint string) {
+	if s.mode != Backend {
 		return
 	}
 	s.lock.Lock()
@@ -296,23 +297,23 @@ func (s *socket) Disconnect(endpoint string) {
 }
 
 // Subscribe 订阅消息
-func (s *socket) Subscribe(topic string) {
-	if s.mode != frontend && s.soctype != zmq.SUB {
+func (s *Socket) Subscribe(topic string) {
+	if s.mode != Frontend && s.soctype != zmq.SUB {
 		return
 	}
 	s.commandChan <- fmt.Sprintf("%s %s", _SUBSCRIBE, topic)
 }
 
 // Unsubscribe 取消订阅
-func (s *socket) Unsubscribe(topic string) {
-	if s.mode != frontend && s.soctype != zmq.SUB {
+func (s *Socket) Unsubscribe(topic string) {
+	if s.mode != Frontend && s.soctype != zmq.SUB {
 		return
 	}
 	s.commandChan <- fmt.Sprintf("%s %s", _UNSUBSCRIBE, topic)
 }
 
 // Close 关闭 socket
-func (s *socket) Close() {
+func (s *Socket) Close() {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if s.isClose {

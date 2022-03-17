@@ -180,7 +180,6 @@ func (cd *consulDiscover) Watch(callback WatchCallback) {
 					callback.Delete(nodeid)
 				}
 			}
-
 		}
 	}
 }
