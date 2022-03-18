@@ -1,6 +1,6 @@
 # SayHello
 
-用于测试链路追踪
+栗子🌰，包含链路追踪的使用。
 
 启动服务端：
 ```
@@ -9,7 +9,7 @@ go run server/main.go
 
 测试 rpc 请求：
 ```
-go run client/sayhello.go
-// 或
-go run client/yourname.go
+go run client/main.go --fname=SayHello 
+go run client/main.go --fname=YourName
+go run client/main.go --fname=StreamReq
 ```

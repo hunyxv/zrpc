@@ -1,9 +1,11 @@
 package example
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -21,11 +23,13 @@ type Resp struct {
 type ISayHello interface {
 	SayHello(ctx context.Context, name string) (string, error)
 	YourName(ctx context.Context) (*Resp, error)
+	StreamReq(ctx context.Context, count int, r io.Reader) (bool, error)
 }
 
 type SayHelloProxy struct {
 	SayHello  func(ctx context.Context, name string) (string, error)
-	YourName func(ctx context.Context) (*Resp, error)
+	YourName  func(ctx context.Context) (*Resp, error)
+	StreamReq func(ctx context.Context, count int, r io.Reader) (bool, error)
 }
 
 var _ ISayHello = (*SayHello)(nil)
@@ -53,7 +57,7 @@ func (s *SayHello) YourName(ctx context.Context) (*Resp, error) {
 	return myName, nil
 }
 
-// getIP 用于测试 链路追踪 
+// getIP 用于测试 链路追踪
 func getIP(ctx context.Context) {
 	client := http.DefaultClient
 	req, _ := http.NewRequest("GET", "http://icanhazip.com", nil)
@@ -75,4 +79,23 @@ func getIP(ctx context.Context) {
 		return
 	}
 	log.Printf("Received result: %s", body)
+}
+
+func (s *SayHello) StreamReq(ctx context.Context, count int, r io.Reader) (bool, error) {
+	log.Printf("stream req start ... [count: %d]", count)
+	reader := bufio.NewReader(r)
+	var i int
+	for {
+		raw, _, err := reader.ReadLine()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return false, err
+		}
+		log.Println(string(raw))
+		i++
+	}
+	log.Println("stream req end...", i)
+	return i == count, nil
 }

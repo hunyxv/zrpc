@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"sync"
 
@@ -24,7 +25,7 @@ func newMethodChannle(m *method, manager *channelManager) (methodChannel, error)
 	case zrpc.ReqRep:
 		return newReqRepChannel(base), nil
 	case zrpc.StreamReqRep:
-		return nil, nil
+		return newStreamReqRepChannel(base), nil
 	case zrpc.ReqStreamRep:
 		return nil, nil
 	case zrpc.Stream:
@@ -92,6 +93,61 @@ func (c *_methodChannel) MsgID() string {
 	return c.msgid
 }
 
+func (c *_methodChannel) marshalParams(args []reflect.Value) (ctx context.Context, params [][]byte, err error) {
+	ctx = args[0].Interface().(context.Context)
+	binCtx, err := msgpack.Marshal(&zrpc.Context{Context: ctx})
+	if err != nil {
+		return
+	}
+	params = append(params, binCtx)
+
+	for i := 1; i < len(args)-1; i++ {
+		binArg, err := msgpack.Marshal(args[i].Interface())
+		if err != nil {
+			return ctx, nil, err
+		}
+		params = append(params, binArg)
+	}
+
+	if len(args) > 1 {
+		if c.method.mode == zrpc.ReqRep {
+			binArg, err := msgpack.Marshal(args[len(args)-1].Interface())
+			if err != nil {
+				return ctx, nil, err
+			}
+			params = append(params, binArg)
+		} else {
+			// 其他传递 空 占位
+			params = append(params, []byte{})
+		}
+	}
+	return
+}
+
+func (c *_methodChannel) unmarshalResult(rets [][]byte) (results []reflect.Value, err error) {
+	for i := 0; i < len(rets)-1; i++ {
+		var ret = reflect.New(c.method.resultTypes[i])
+		err = msgpack.Unmarshal(rets[i], ret.Interface())
+		if err != nil {
+			return
+		}
+		results = append(results, ret.Elem())
+	}
+
+	// 最后一个 err
+	var errStr string
+	err = msgpack.Unmarshal(rets[len(rets)-1], &errStr)
+	if err != nil {
+		return
+	}
+	if errStr != "" {
+		results = append(results, reflect.ValueOf(errors.New(errStr)))
+	} else {
+		results = append(results, reflect.New(c.method.resultTypes[len(c.method.resultTypes)-1]).Elem())
+	}
+	return
+}
+
 func (c *_methodChannel) release() {
 	pool.Put(c)
 }
@@ -100,13 +156,15 @@ var _ methodChannel = (*reqRepChannel)(nil)
 
 type reqRepChannel struct {
 	*_methodChannel
+
 	ch chan *zrpc.Pack
 }
 
 func newReqRepChannel(base *_methodChannel) *reqRepChannel {
 	return &reqRepChannel{
 		_methodChannel: base,
-		ch:             make(chan *zrpc.Pack, 1),
+
+		ch: make(chan *zrpc.Pack, 1),
 	}
 }
 
@@ -114,21 +172,9 @@ func (rr *reqRepChannel) Call(args []reflect.Value) []reflect.Value {
 	defer rr._methodChannel.release()
 	defer close(rr.ch)
 
-	var params [][]byte
-	// 第一个参数为ctx
-	ctx := args[0].Interface().(context.Context)
-	binCtx, err := msgpack.Marshal(&zrpc.Context{Context: ctx})
+	ctx, params, err := rr.marshalParams(args)
 	if err != nil {
 		return rr.errResult(err)
-	}
-
-	params = append(params, binCtx)
-	for i := 1; i < len(args); i++ {
-		binArg, err := msgpack.Marshal(args[i].Interface())
-		if err != nil {
-			return rr.errResult(err)
-		}
-		params = append(params, binArg)
 	}
 
 	pack := &zrpc.Pack{
@@ -153,29 +199,117 @@ func (rr *reqRepChannel) Call(args []reflect.Value) []reflect.Value {
 			return rr.errResult(errors.New(errStr))
 		}
 
-		results := make([]reflect.Value, 0, len(rr.method.resultTypes))
-		for i := 0; i < len(retPack.Args)-1; i++ {
-			var ret = reflect.New(rr.method.resultTypes[i])
-			err := msgpack.Unmarshal(retPack.Args[i], ret.Interface())
-			if err != nil {
-				return rr.errResult(err)
-			}
-			results = append(results, ret.Elem())
-		}
-		// 最后一个 err
-		var errStr string
-		err = msgpack.Unmarshal(retPack.Args[len(retPack.Args)-1], &errStr)
+		results, err := rr.unmarshalResult(retPack.Args)
 		if err != nil {
 			return rr.errResult(err)
-		}
-		if errStr != "" {
-			results = append(results, reflect.ValueOf(errors.New(errStr)))
-		} else {
-			results = append(results, reflect.New(rr.method.resultTypes[len(rr.method.resultTypes)-1]).Elem())
 		}
 		return results
 	}
 }
 func (rr *reqRepChannel) Receive(p *zrpc.Pack) {
 	rr.ch <- p
+}
+
+type streamReqRepChannel struct {
+	*_methodChannel
+
+	ch chan *zrpc.Pack
+}
+
+func newStreamReqRepChannel(base *_methodChannel) *streamReqRepChannel {
+	return &streamReqRepChannel{
+		_methodChannel: base,
+
+		ch: make(chan *zrpc.Pack, 1),
+	}
+}
+
+func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
+	defer sr._methodChannel.release()
+	defer close(sr.ch)
+
+	var reader io.Reader
+	reader, ok := args[len(args)-1].Interface().(io.Reader)
+	if !ok {
+		return sr.errResult(fmt.Errorf(
+			"cannot use '%s' as io.Reader value in argument to %s",
+			args[len(args)-1].Type().Kind(), sr.method.methodName))
+	}
+
+	ctx, params, err := sr.marshalParams(args)
+	if err != nil {
+		return sr.errResult(err)
+	}
+
+	pack := &zrpc.Pack{
+		Stage: zrpc.REQUEST,
+		Args:  params,
+	}
+	pack.Set(zrpc.MESSAGEID, sr.MsgID())
+	pack.SetMethodName(sr.method.methodName)
+	_, err = sr.manager.Send(pack)
+	if err != nil {
+		return sr.errResult(err)
+	}
+
+	var buf [4096]byte
+	var eof bool
+	tmpCh := make(chan struct{}, 1)
+	defer close(tmpCh)
+	tmpCh <- struct{}{}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return sr.errResult(ctx.Err())
+		case retPack := <-sr.ch:
+			if retPack.Stage == zrpc.ERROR {
+				var errStr string
+				msgpack.Unmarshal(retPack.Args[0], &errStr)
+				return sr.errResult(errors.New(errStr))
+			}
+
+			results, err := sr.unmarshalResult(retPack.Args)
+			if err != nil {
+				return sr.errResult(err)
+			}
+			return results
+		case <-tmpCh:
+			n, err := reader.Read(buf[:])
+			if err != nil {
+				if err != io.EOF {
+					pack.Stage = zrpc.STREAM_END
+					pack.Args = nil
+					_, err = sr.manager.Send(pack)
+					if err != nil {
+						return sr.errResult(err)
+					}
+					return sr.errResult(err)
+				} else {
+					eof = true
+					pack.Stage = zrpc.STREAM_END
+					pack.Args = nil
+					_, err = sr.manager.Send(pack)
+					if err != nil {
+						return sr.errResult(err)
+					}
+					break
+				}
+			}
+			pack.Stage = zrpc.STREAM
+			pack.Args = [][]byte{buf[:n]}
+			_, err = sr.manager.Send(pack)
+			if err != nil {
+				return sr.errResult(err)
+			}
+		}
+		if !eof {
+			tmpCh <- struct{}{}
+		}
+	}
+
+}
+
+func (sr *streamReqRepChannel) Receive(p *zrpc.Pack) {
+	sr.ch <- p
 }

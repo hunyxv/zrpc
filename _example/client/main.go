@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"example"
+	"flag"
+	"fmt"
+	"io"
 	"log"
-	"reflect"
 	"time"
 
 	"github.com/hunyxv/zrpc"
@@ -20,7 +22,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+var methodName = flag.String("fname", "SayHello", "called method function name")
+
 func main() {
+	flag.Parse()
 	// zrpc client
 	cli, err := zrpcCli.NewDirectClient(zrpcCli.ServerInfo{
 		ServerName:    "example",
@@ -42,6 +47,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	// 绑定全局 TracerProvider
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
@@ -75,13 +81,42 @@ func main() {
 	// 调用rpc服务
 	ctx, cancel2 := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel2()
-	resp, err := proxy.SayHello(ctx, "hunyxv")
-	if err != nil {
-		log.Println("测试返回错误： ", err)
-		span.SetStatus(codes.Error, err.Error())
+
+	log.Println("method name: ", *methodName)
+	switch *methodName {
+	case "SayHello":
+		resp, err := proxy.SayHello(ctx, "hunyxv")
+		if err != nil {
+			log.Println("测试返回错误： ", err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		log.Println(resp)
+	case "YourName":
+		resp, err := proxy.YourName(ctx)
+		if err != nil {
+			log.Fatal("发生错误： ", err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		log.Println(resp)
+	case "StreamReq":
+		count := 100
+		readerCloser, writerCloser := io.Pipe()
+		go func ()  {
+			for i := 0; i< count; i++ {
+				fmt.Fprintf(writerCloser, "line %d\n", i)
+			}
+			writerCloser.Close()
+		}()
+		resp, err := proxy.StreamReq(ctx, count, readerCloser)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Println("succ? ", resp)
+
 	}
-	log.Println(resp)
 }
+
+
 
 const (
 	service     = "trace-demo"
@@ -107,12 +142,4 @@ func tracerProvider(url string) (*tracesdk.TracerProvider, error) {
 		)),
 	)
 	return tp, nil
-}
-
-func isNil(i interface{}) bool {
-	vi := reflect.ValueOf(i)
-	if vi.Kind() == reflect.Ptr {
-		return vi.IsNil()
-	}
-	return false
 }
