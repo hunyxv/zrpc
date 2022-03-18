@@ -3,12 +3,14 @@ package example
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -25,6 +27,7 @@ type ISayHello interface {
 	YourName(ctx context.Context) (*Resp, error)
 	StreamReq(ctx context.Context, count int, r io.Reader) (bool, error)
 	StreamRep(ctx context.Context, count int, w io.WriteCloser) error
+	Stream(ctx context.Context, count int, rw io.ReadWriteCloser) error
 }
 
 type SayHelloProxy struct {
@@ -32,6 +35,7 @@ type SayHelloProxy struct {
 	YourName  func(ctx context.Context) (*Resp, error)
 	StreamReq func(ctx context.Context, count int, r io.Reader) (bool, error)
 	StreamRep func(ctx context.Context, count int, w io.WriteCloser) error
+	Stream    func(ctx context.Context, count int, rw io.ReadWriteCloser) error
 }
 
 var _ ISayHello = (*SayHello)(nil)
@@ -112,5 +116,73 @@ func (s *SayHello) StreamRep(ctx context.Context, count int, w io.WriteCloser) e
 		time.Sleep(time.Nanosecond * 100)
 	}
 	log.Println("stream reply end ...")
+	return nil
+}
+
+type RequestRespone struct {
+	Index int `json:"index"`
+}
+
+func (s *SayHello) Stream(ctx context.Context, count int, rw io.ReadWriteCloser) error {
+	log.Printf("stream start ... [count: %d]", count)
+	ch := make(chan int, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		reader := bufio.NewReader(rw)
+		for {
+			data, _, err := reader.ReadLine()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				log.Println("[error]: ", err)
+				break
+			}
+			var resp RequestRespone
+			json.Unmarshal(data, &resp)
+			log.Printf("recv: %+v", resp)
+			ch <- resp.Index
+		}
+		close(ch)
+	}()
+
+	writer := bufio.NewWriter(rw)
+	store := map[int]bool{}
+	for i := 0; i < count; i += 5 {
+		for j := i; j < i+5; j++ {
+			store[j] = false
+			req := RequestRespone{
+				Index: j,
+			}
+			log.Printf("send: %d", j)
+			raw, _ := json.Marshal(req)
+			for k := 0; k < len(raw); {
+				n, err := writer.Write(raw[k:])
+				if err != nil {
+					return err
+				}
+				k += n
+			}
+			writer.WriteByte('\n')
+		}
+		writer.Flush()
+
+		for exit := false; exit; {
+			exit = true
+			i := <-ch
+			store[i] = true
+			for _, v := range store {
+				if !v {
+					exit = false
+					break
+				}
+			}
+		}
+	}
+
+	wg.Wait()
+	log.Println("stream stop ...")
 	return nil
 }

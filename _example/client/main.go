@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"example"
 	"flag"
 	"fmt"
@@ -139,8 +140,45 @@ func main() {
 			log.Fatal(err)
 		}
 		wg.Wait()
+	case "Stream":
+		count := 100
+		readerCloser, writerCloser := io.Pipe()
+		readerCloser2, writerCloser2 := io.Pipe()
+		rw := readeWriteCloser{
+			Reader: readerCloser,
+			Writer: writerCloser2,
+			Closer: writerCloser2,
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := bufio.NewReader(readerCloser2)
+			for {
+				data, _, err := r.ReadLine()
+				if err != nil {
+					return
+				}
+				var req example.RequestRespone
+				json.Unmarshal(data, &req)
+				log.Printf("%+v", req)
+				writerCloser.Write(data)
+				writerCloser.Write([]byte{'\n'})
+			}
+		}()
+		err := proxy.Stream(ctx, count, rw)
+		if err != nil {
+			log.Fatal(err)
+		}
 	default:
 	}
+}
+
+type readeWriteCloser struct {
+	io.Reader
+	io.Writer 
+	io.Closer
 }
 
 const (
