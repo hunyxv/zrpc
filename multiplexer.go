@@ -106,14 +106,14 @@ func (m *SvcMultiplexer) submitTask(f func()) error {
 }
 
 func (m *SvcMultiplexer) do(msgid string, pack *Pack) (err error) {
-	mf, err := m.rpc.GenerateExecFunc(pack.MethodName())
+	mf, err := m.rpc.GenerateExecFunc(pack.MethodName(), m)
 	if err != nil {
 		return err
 	}
 
 	if mf.FuncMode() == ReqRep {
 		return m.submitTask(func() {
-			mf.Call(pack, m)
+			mf.Call(pack)
 		})
 	}
 
@@ -125,7 +125,7 @@ func (m *SvcMultiplexer) do(msgid string, pack *Pack) (err error) {
 
 	m.activeChannels.Store(msgid, mf)
 	return m.submitTask(func() {
-		mf.Call(pack, m)
+		mf.Call(pack)
 	})
 }
 

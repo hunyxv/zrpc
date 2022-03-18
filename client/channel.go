@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"sync"
 
@@ -12,10 +11,18 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-func newMethodChannle(m method, manager *channelManager) (methodChannel, error) {
+var (
+	pool sync.Pool = sync.Pool{New: func() any {
+		return &_methodChannel{}
+	}}
+)
+
+func newMethodChannle(m *method, manager *channelManager) (methodChannel, error) {
+	base := pool.Get().(*_methodChannel)
+	base.init(m, manager)
 	switch m.mode {
 	case zrpc.ReqRep:
-		return newReqRepChannel(m, manager), nil
+		return newReqRepChannel(base), nil
 	case zrpc.StreamReqRep:
 		return nil, nil
 	case zrpc.ReqStreamRep:
@@ -57,116 +64,20 @@ func (c *channels) remove(msgid string) {
 	c.mutex.Unlock()
 }
 
-type channelManager struct {
-	channels map[string]*channels // method name: channels
-	zconn    zConnecter
-	c        chan struct{}
-
-	mutex sync.RWMutex
-}
-
-func newChannelManager(conn zConnecter) *channelManager {
-	manager := &channelManager{
-		channels: make(map[string]*channels),
-		zconn:    conn,
-		c:        make(chan struct{}),
-	}
-
-	return manager
-}
-
-func (manager *channelManager) start() {
-	for {
-		select {
-		case <-manager.c:
-			return
-		case p := <-manager.zconn.Recv():
-			manager.mutex.RLock()
-			chs, ok := manager.channels[p.MethodName()]
-			if !ok {
-				log.Printf("[zrpc-cli]: returned result cannot find methodfunc")
-				continue
-			}
-			manager.mutex.RUnlock()
-			msgid := p.Get(zrpc.MESSAGEID)
-			ch, ok := chs.load(msgid)
-			if !ok {
-				log.Printf("[zrpc-cli]: returned result cannot find consumer")
-			}
-
-			ch.Receive(p)
-		}
-	}
-}
-
-func (manager *channelManager) getChannels(methodName string) *channels {
-	manager.mutex.RLock()
-	chs, ok := manager.channels[methodName]
-	if !ok {
-		manager.mutex.RUnlock()
-		manager.mutex.Lock()
-		chs, ok = manager.channels[methodName]
-		if !ok {
-			chs = &channels{m: make(map[string]methodChannel)}
-			manager.channels[methodName] = chs
-		}
-		manager.mutex.Unlock()
-		return chs
-	}
-
-	manager.mutex.RUnlock()
-	return chs
-}
-
-func (manager *channelManager) insertNewChannel(methodName string, ch methodChannel) {
-	chs := manager.getChannels(methodName)
-	chs.insert(ch.MsgID(), ch)
-}
-
-func (manager *channelManager) removeChannel(methodName string, msgid string) {
-	chs := manager.getChannels(methodName)
-	chs.remove(msgid)
-}
-
-// Send 发送 pack
-func (manager *channelManager) Send(p *zrpc.Pack) (string, error) {
-	return manager.zconn.Send(p)
-}
-
-// SpecifySend 向指定服务节点发送 pack
-func (manager *channelManager) SpecifySend(id string, p *zrpc.Pack) error {
-	return manager.zconn.SpecifySend(id, p)
-}
-
-func (manager *channelManager) Recv(data []byte) {
-	return
-}
-
-func (manager *channelManager) Close() {
-	close(manager.c)
-	return
-}
-
-var _ methodChannel = (*reqRepChannel)(nil)
-
-type reqRepChannel struct {
+type _methodChannel struct {
 	msgid   string
-	method  method
-	ch      chan *zrpc.Pack
+	method  *method
 	manager *channelManager
 }
 
-func newReqRepChannel(m method, manager *channelManager) *reqRepChannel {
-	return &reqRepChannel{
-		msgid:   zrpc.NewMessageID(),
-		method:  m,
-		ch:      make(chan *zrpc.Pack),
-		manager: manager,
-	}
+func (c *_methodChannel) init(m *method, manager *channelManager) {
+	c.msgid = zrpc.NewMessageID()
+	c.method = m
+	c.manager = manager
 }
 
-func (rr *reqRepChannel) errResult(err error) (results []reflect.Value) {
-	for _, t := range rr.method.resultTypes[:len(rr.method.resultTypes)-1] {
+func (c *_methodChannel) errResult(err error) (results []reflect.Value) {
+	for _, t := range c.method.resultTypes[:len(c.method.resultTypes)-1] {
 		r := reflect.New(t).Elem()
 		results = append(results, r)
 	}
@@ -174,14 +85,35 @@ func (rr *reqRepChannel) errResult(err error) (results []reflect.Value) {
 	return
 }
 
-func (rr *reqRepChannel) MsgID() string {
-	if len(rr.msgid) == 0 {
-		rr.msgid = zrpc.NewMessageID()
+func (c *_methodChannel) MsgID() string {
+	if len(c.msgid) == 0 {
+		c.msgid = zrpc.NewMessageID()
 	}
-	return rr.msgid
+	return c.msgid
+}
+
+func (c *_methodChannel) release() {
+	pool.Put(c)
+}
+
+var _ methodChannel = (*reqRepChannel)(nil)
+
+type reqRepChannel struct {
+	*_methodChannel
+	ch chan *zrpc.Pack
+}
+
+func newReqRepChannel(base *_methodChannel) *reqRepChannel {
+	return &reqRepChannel{
+		_methodChannel: base,
+		ch:             make(chan *zrpc.Pack, 1),
+	}
 }
 
 func (rr *reqRepChannel) Call(args []reflect.Value) []reflect.Value {
+	defer rr._methodChannel.release()
+	defer close(rr.ch)
+
 	var params [][]byte
 	// 第一个参数为ctx
 	ctx := args[0].Interface().(context.Context)

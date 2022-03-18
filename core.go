@@ -21,10 +21,10 @@ var (
 	ErrTooFewParam       = errors.New("zrpc: too few parameters")
 	ErrSubmitTimeout     = errors.New("zrpc: submit task timed out")
 
-	errType         = reflect.TypeOf(new(error)).Elem()
-	ctxType         = reflect.TypeOf(new(context.Context)).Elem()
-	readType        = reflect.TypeOf(new(io.Reader)).Elem()
-	writeCloserType = reflect.TypeOf(new(io.WriteCloser)).Elem()
+	errType    = reflect.TypeOf(new(error)).Elem()
+	ctxType    = reflect.TypeOf(new(context.Context)).Elem()
+	readType   = reflect.TypeOf(new(io.Reader)).Elem()
+	writerType = reflect.TypeOf(new(io.Writer)).Elem()
 )
 
 type FuncMode int
@@ -117,7 +117,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 				mode |= StreamReqRep
 			}
 			// 最后一个参数实现了 io.Writer
-			if method.paramTypes[numOfParams-2].Implements(writeCloserType) {
+			if method.paramTypes[numOfParams-2].Implements(writerType) {
 				mode |= ReqStreamRep
 			}
 		}
@@ -140,7 +140,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 
 // GenerateExecFunc 查找并返回可执行函数
 // 	name: /{servername}/methodname
-func (rpc *RPCInstance) GenerateExecFunc(name string) (methodFunc, error) {
+func (rpc *RPCInstance) GenerateExecFunc(name string, r iReply) (methodFunc, error) {
 	rpc.rwMutex.RLock()
 	defer rpc.rwMutex.RUnlock()
 	nameSlice := strings.SplitN(name, "/", 2)
@@ -154,5 +154,5 @@ func (rpc *RPCInstance) GenerateExecFunc(name string) (methodFunc, error) {
 	if !ok {
 		return nil, fmt.Errorf("%s server no %s method", serverName, methodName)
 	}
-	return newMethodFunc(method)
+	return newMethodFunc(method, r)
 }

@@ -58,11 +58,6 @@ func main() {
 	}(ctx)
 
 	tr := tp.Tracer("test-trace")
-	_, span := tr.Start(ctx, "send reqrep")
-	defer span.End()
-
-	// 带链路追踪信息的 ctx
-	ctx = trace.ContextWithSpan(ctx, span)
 
 	// 对代理对象函数进行替换
 	proxy := &example.SayHelloProxy{}
@@ -70,6 +65,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// span start
+	_, span := tr.Start(ctx, "send reqrep")
+	defer span.End()
+	// 带链路追踪信息的 ctx
+	ctx = trace.ContextWithSpan(ctx, span)
 
 	// 调用rpc服务
 	ctx, cancel2 := context.WithTimeout(ctx, 5*time.Second)

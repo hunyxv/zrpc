@@ -123,7 +123,7 @@ func (proxy *instanceProxy) replace(v reflect.Value, t reflect.Type,  index int)
 
 func (proxy *instanceProxy) MakeFunc(methodType reflect.Type, m method) reflect.Value {
 	return reflect.MakeFunc(methodType, func(args []reflect.Value) (results []reflect.Value) {
-		ch, err := newMethodChannle(m, proxy.channelManager)
+		ch, err := newMethodChannle(&m, proxy.channelManager)
 		if err != nil {
 			err = pkgerr.WithMessage(err, "[zrpc-cli]: failed to initialize channel")
 			for _, t := range m.resultTypes[:len(m.resultTypes)-1] {
