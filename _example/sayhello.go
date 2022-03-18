@@ -24,12 +24,14 @@ type ISayHello interface {
 	SayHello(ctx context.Context, name string) (string, error)
 	YourName(ctx context.Context) (*Resp, error)
 	StreamReq(ctx context.Context, count int, r io.Reader) (bool, error)
+	StreamRep(ctx context.Context, count int, w io.WriteCloser) error
 }
 
 type SayHelloProxy struct {
 	SayHello  func(ctx context.Context, name string) (string, error)
 	YourName  func(ctx context.Context) (*Resp, error)
 	StreamReq func(ctx context.Context, count int, r io.Reader) (bool, error)
+	StreamRep func(ctx context.Context, count int, w io.WriteCloser) error
 }
 
 var _ ISayHello = (*SayHello)(nil)
@@ -82,7 +84,7 @@ func getIP(ctx context.Context) {
 }
 
 func (s *SayHello) StreamReq(ctx context.Context, count int, r io.Reader) (bool, error) {
-	log.Printf("stream req start ... [count: %d]", count)
+	log.Printf("stream request start ... [count: %d]", count)
 	reader := bufio.NewReader(r)
 	var i int
 	for {
@@ -96,6 +98,19 @@ func (s *SayHello) StreamReq(ctx context.Context, count int, r io.Reader) (bool,
 		log.Println(string(raw))
 		i++
 	}
-	log.Println("stream req end...", i)
+	log.Println("stream request end...", i)
 	return i == count, nil
+}
+
+func (s *SayHello) StreamRep(ctx context.Context, count int, w io.WriteCloser) error {
+	log.Printf("stream reply start ... [count: %d]", count)
+	defer w.Close()
+	writer := bufio.NewWriter(w)
+	defer writer.Flush()
+	for i := 0; i < count; i++ {
+		fmt.Fprintf(writer, "line %d\n", i)
+		time.Sleep(time.Nanosecond * 100)
+	}
+	log.Println("stream reply end ...")
+	return nil
 }

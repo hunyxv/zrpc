@@ -356,8 +356,8 @@ type writeCloser struct {
 type reqStreamRepFunc struct {
 	*_methodFunc
 
-	req    *Pack
-	writer io.Writer
+	req         *Pack
+	writeCloser io.WriteCloser
 
 	isClosed bool
 	lock     sync.Locker
@@ -370,7 +370,7 @@ func newReqStreamRepFunc(base *_methodFunc) methodFunc {
 		lock: spinlock.NewSpinLock(),
 	}
 
-	rsf.writer = rsf
+	rsf.writeCloser = rsf
 	return rsf
 }
 
@@ -390,7 +390,7 @@ func (rsf *reqStreamRepFunc) Call(p *Pack) {
 	}
 	defer rsf.spanEnd()
 	// 最后一个是 WriteCloser
-	rwvalue := reflect.ValueOf(rsf.writer)
+	rwvalue := reflect.ValueOf(rsf.writeCloser)
 	params[l-1] = rwvalue
 
 	results, err := rsf.call(params)
@@ -429,17 +429,18 @@ func (rsf *reqStreamRepFunc) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (rsf *reqStreamRepFunc) Release() error {
+func (rsf *reqStreamRepFunc) Close() error {
 	if rsf.isClosed {
 		return nil
 	}
+
 	rsf.lock.Lock()
 	defer rsf.lock.Unlock()
 	if rsf.isClosed {
 		return nil
 	}
-
 	rsf.isClosed = true
+
 	var header = make(Header, len(rsf.req.Header))
 	for k, v := range rsf.req.Header {
 		for _, i := range v {
@@ -451,9 +452,14 @@ func (rsf *reqStreamRepFunc) Release() error {
 		Header:   header,
 		Stage:    STREAM_END,
 	}
-	defer rsf.cancel()
-	defer rsf._methodFunc.Release()
 	return rsf.reply.Reply(data)
+}
+
+func (rsf *reqStreamRepFunc) Release() error {
+	rsf.Close()
+	rsf.cancel()
+	rsf._methodFunc.Release()
+	return nil
 }
 
 type readWriteCloser struct {
@@ -492,6 +498,7 @@ func newStreamFunc(base *_methodFunc) (methodFunc, error) {
 	sf.rw = &readWriteCloser{
 		Reader: bufio.NewReader(readCloser),
 		Writer: sf, // 写入需要及时发送出去
+		Closer: sf,
 	}
 	return sf, nil
 }
@@ -552,6 +559,34 @@ func (sf *streamFunc) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
+func (sf *streamFunc) Close() error {
+	if sf.isClose {
+		return nil
+	}
+
+	sf.lock.Lock()
+	defer sf.lock.Unlock()
+	if sf.isClose {
+		return nil
+	}
+
+	sf.isClose = true
+
+	var header = make(Header, len(sf.req.Header))
+	for k, v := range sf.req.Header {
+		for _, i := range v {
+			header.Set(k, i)
+		}
+	}
+
+	data := &Pack{
+		Identity: sf.req.Identity,
+		Header:   header,
+		Stage:    STREAM_END,
+	}
+	return sf.reply.Reply(data)
+}
+
 func (sf *streamFunc) Next(data [][]byte) {
 	raw := data[0]
 	var i int
@@ -580,22 +615,5 @@ func (sf *streamFunc) End() {
 func (sf *streamFunc) Release() error {
 	defer sf._methodFunc.Release()
 	sf.End()
-
-	if sf.isClose {
-		return nil
-	}
-
-	var header = make(Header, len(sf.req.Header))
-	for k, v := range sf.req.Header {
-		for _, i := range v {
-			header.Set(k, i)
-		}
-	}
-	sf.isClose = true
-	data := &Pack{
-		Identity: sf.req.Identity,
-		Header:   header,
-		Stage:    STREAM_END,
-	}
-	return sf.reply.Reply(data)
+	return sf.Close()
 }

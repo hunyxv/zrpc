@@ -27,7 +27,7 @@ func newMethodChannle(m *method, manager *channelManager) (methodChannel, error)
 	case zrpc.StreamReqRep:
 		return newStreamReqRepChannel(base), nil
 	case zrpc.ReqStreamRep:
-		return nil, nil
+		return newReqStreamRepChannel(base), nil
 	case zrpc.Stream:
 		return nil, nil
 	}
@@ -307,9 +307,87 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 			tmpCh <- struct{}{}
 		}
 	}
-
 }
 
 func (sr *streamReqRepChannel) Receive(p *zrpc.Pack) {
 	sr.ch <- p
+}
+
+type reqStreamRepChannel struct {
+	*_methodChannel
+
+	ch chan *zrpc.Pack
+}
+
+func newReqStreamRepChannel(base *_methodChannel) *reqStreamRepChannel {
+	return &reqStreamRepChannel{
+		_methodChannel: base,
+
+		ch: make(chan *zrpc.Pack, 1),
+	}
+}
+
+func (rs *reqStreamRepChannel) Call(args []reflect.Value) []reflect.Value {
+	defer rs._methodChannel.release()
+	defer close(rs.ch)
+
+	var writeCloser io.WriteCloser
+	writeCloser, ok := args[len(args)-1].Interface().(io.WriteCloser)
+	if !ok {
+		return rs.errResult(fmt.Errorf(
+			"cannot use '%s' as io.Reader value in argument to %s",
+			args[len(args)-1].Type().Kind(), rs.method.methodName))
+	}
+
+	ctx, params, err := rs.marshalParams(args)
+	if err != nil {
+		return rs.errResult(err)
+	}
+
+	pack := &zrpc.Pack{
+		Stage: zrpc.REQUEST,
+		Args:  params,
+	}
+	pack.Set(zrpc.MESSAGEID, rs.MsgID())
+	pack.SetMethodName(rs.method.methodName)
+	_, err = rs.manager.Send(pack)
+	if err != nil {
+		return rs.errResult(err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return rs.errResult(ctx.Err())
+		case retPack := <-rs.ch:
+			switch retPack.Stage {
+			case zrpc.ERROR:
+				var errStr string
+				msgpack.Unmarshal(retPack.Args[0], &errStr)
+				return rs.errResult(errors.New(errStr))
+			case zrpc.STREAM:
+				data := retPack.Args[0]
+				var count = 0
+				for count < len(data) {
+					n, err := writeCloser.Write(data[count:])
+					if err != nil {
+						return rs.errResult(err)
+					}
+					count += n
+				}
+			case zrpc.STREAM_END:
+				writeCloser.Close()
+			case zrpc.REPLY:
+				results, err := rs.unmarshalResult(retPack.Args)
+				if err != nil {
+					return rs.errResult(err)
+				}
+				return results
+			}
+		}
+	}
+}
+
+func (rs *reqStreamRepChannel) Receive(p *zrpc.Pack) {
+	rs.ch <- p
 }

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"example"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/hunyxv/zrpc"
@@ -101,8 +103,11 @@ func main() {
 	case "StreamReq":
 		count := 100
 		readerCloser, writerCloser := io.Pipe()
-		go func ()  {
-			for i := 0; i< count; i++ {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < count; i++ {
 				fmt.Fprintf(writerCloser, "line %d\n", i)
 			}
 			writerCloser.Close()
@@ -112,11 +117,31 @@ func main() {
 			log.Fatal(err)
 		}
 		log.Println("succ? ", resp)
-
+		wg.Wait()
+	case "StreamRep":
+		count := 100
+		readerCloser, writerCloser := io.Pipe()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := bufio.NewReader(readerCloser)
+			for {
+				data, _, err := r.ReadLine()
+				if err != nil {
+					return
+				}
+				log.Println(string(data))
+			}
+		}()
+		err := proxy.StreamRep(ctx, count, writerCloser)
+		if err != nil {
+			log.Fatal(err)
+		}
+		wg.Wait()
+	default:
 	}
 }
-
-
 
 const (
 	service     = "trace-demo"

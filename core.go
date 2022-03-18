@@ -24,7 +24,7 @@ var (
 	errType    = reflect.TypeOf(new(error)).Elem()
 	ctxType    = reflect.TypeOf(new(context.Context)).Elem()
 	readType   = reflect.TypeOf(new(io.Reader)).Elem()
-	writerType = reflect.TypeOf(new(io.Writer)).Elem()
+	writeCloserType = reflect.TypeOf(new(io.WriteCloser)).Elem()
 )
 
 type FuncMode int
@@ -117,7 +117,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 				mode |= StreamReqRep
 			}
 			// 最后一个参数实现了 io.Writer
-			if method.paramTypes[numOfParams-2].Implements(writerType) {
+			if method.paramTypes[numOfParams-2].Implements(writeCloserType) {
 				mode |= ReqStreamRep
 			}
 		}
