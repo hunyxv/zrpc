@@ -42,8 +42,10 @@ func (ctx *Context) Cancel() {
 
 func (ctx *Context) MarshalMsgpack() ([]byte, error) {
 	payload := make(map[zrpcContextKey]interface{}, 2)
-	if data := ctx.Value(TracePayloadKey); !isNil(data) {
-		payload[TracePayloadKey] = data
+	tracePayload := map[string]string{}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(tracePayload))
+	if len(tracePayload) != 0 {
+		payload[TracePayloadKey] = tracePayload
 	}
 	if data := ctx.Value(PayloadKey); !isNil(data) {
 		payload[PayloadKey] = data
@@ -76,7 +78,7 @@ func (ctx *Context) UnmarshalMsgpack(b []byte) error {
 
 		if v, ok := m[DeadlineKey]; ok {
 			if deadline, ok := v.(int64); ok {
-				timeout := time.Since(time.Unix(0, deadline))
+				timeout := time.Until(time.Unix(0, deadline))
 				ctx.Context, ctx.cancel = context.WithTimeout(ctx.Context, timeout)
 			}
 		}
@@ -93,9 +95,4 @@ func InjectTrace2ctx(ctx context.Context) context.Context {
 	}
 	valueCtx := context.WithValue(ctx, TracePayloadKey, payload)
 	return valueCtx
-}
-
-func ExtractTraceid(ctx context.Context) (m map[string]string) {
-	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(m))
-	return
 }

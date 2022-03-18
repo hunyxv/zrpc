@@ -11,6 +11,7 @@ import (
 	zrpcCli "github.com/hunyxv/zrpc/client"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -76,6 +77,7 @@ func main() {
 	resp, err := proxy.SayHello(ctx, "hunyxv")
 	if err != nil {
 		log.Println("测试返回错误： ", err)
+		span.SetStatus(codes.Error, err.Error())
 	}
 	log.Println(resp)
 }

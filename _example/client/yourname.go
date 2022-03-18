@@ -10,6 +10,7 @@ import (
 	zrpcCli "github.com/hunyxv/zrpc/client"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -74,7 +75,8 @@ func main() {
 	defer cancel2()
 	resp, err := proxy.YourName(ctx)
 	if err != nil {
-		log.Println("测试返回错误： ", err)
+		span.SetStatus(codes.Error, err.Error())
+		log.Fatal("发生错误： ", err)
 	}
 	log.Println(resp.Name)
 }

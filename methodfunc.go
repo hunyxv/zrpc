@@ -73,11 +73,16 @@ func (f *_methodFunc) unmarshalCtx(b []byte) (context.Context, error) {
 	}
 
 	if tinfo := ctx.Value(TracePayloadKey); !isNil(tinfo) {
-		if m, ok := tinfo.(map[string]string); ok {
-			ctx.Context = otel.GetTextMapPropagator().Extract(ctx.Context, propagation.MapCarrier(m))
-			ctx.Context, f.span = otel.GetTracerProvider().Tracer("zrpc-go").Start(ctx.Context, f.Method.methodName)
-			return ctx, nil
+		trace := map[string]string{}
+		val := reflect.ValueOf(tinfo)
+		iter := val.MapRange()
+		for iter.Next() {
+			k := iter.Key().Interface().(string)
+			v := iter.Value().Interface().(string)
+			trace[k] = v
 		}
+		tmpCtx := otel.GetTextMapPropagator().Extract(ctx.Context, propagation.MapCarrier(trace))
+		ctx.Context, f.span = otel.GetTracerProvider().Tracer("zrpc-go").Start(tmpCtx, f.Method.methodName)
 	}
 	return ctx, nil
 }

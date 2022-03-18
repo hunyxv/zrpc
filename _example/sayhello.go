@@ -37,7 +37,7 @@ type SayHello struct{}
 // span1: -->    SayHello    -->
 // span2:    --> getIP -->
 func (s *SayHello) SayHello(ctx context.Context, name string) (string, error) {
-	str := fmt.Sprintf("Hello %s!\n", name)
+	str := fmt.Sprintf("Hello %s!", name)
 	log.Println(str)
 	time.Sleep(100 * time.Millisecond)
 	getIP(ctx)
@@ -74,5 +74,5 @@ func getIP(ctx context.Context) {
 		span.SetStatus(codes.Error, err.Error())
 		return
 	}
-	log.Printf("Received result: %s\n", body)
+	log.Printf("Received result: %s", body)
 }

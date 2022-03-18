@@ -143,8 +143,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 func (rpc *RPCInstance) GenerateExecFunc(name string) (methodFunc, error) {
 	rpc.rwMutex.RLock()
 	defer rpc.rwMutex.RUnlock()
-	nameSlice := strings.SplitN(name, "/", 2) //path.Split(name)
-	log.Println(nameSlice)
+	nameSlice := strings.SplitN(name, "/", 2)
 	serverName, methodName := nameSlice[0], nameSlice[1]
 	server, ok := rpc.servers[serverName]
 	if !ok {
