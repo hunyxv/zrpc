@@ -247,7 +247,7 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 	}
 	pack.Set(zrpc.MESSAGEID, sr.MsgID())
 	pack.SetMethodName(sr.method.methodName)
-	nid, err := sr.manager.Send(pack)
+	_, err = sr.manager.Send(pack)
 	if err != nil {
 		return sr.errResult(err)
 	}
@@ -280,7 +280,7 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 				if err != io.EOF {
 					pack.Stage = zrpc.STREAM_END
 					pack.Args = nil
-					err = sr.manager.SpecifySend(nid, pack)
+					_, err = sr.manager.Send(pack)
 					if err != nil {
 						return sr.errResult(err)
 					}
@@ -289,7 +289,7 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 					eof = true
 					pack.Stage = zrpc.STREAM_END
 					pack.Args = nil
-					err = sr.manager.SpecifySend(nid, pack)
+					_, err = sr.manager.Send(pack)
 					if err != nil {
 						return sr.errResult(err)
 					}
@@ -298,7 +298,7 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 			}
 			pack.Stage = zrpc.STREAM
 			pack.Args = [][]byte{buf[:n]}
-			err = sr.manager.SpecifySend(nid, pack)
+			_, err = sr.manager.Send(pack)
 			if err != nil {
 				return sr.errResult(err)
 			}
@@ -392,31 +392,23 @@ func (rs *reqStreamRepChannel) Receive(p *zrpc.Pack) {
 	rs.ch <- p
 }
 
-type sendItem struct {
-	p   *zrpc.Pack
-	err error
-}
-
 type streamChannel struct {
 	*_methodChannel
 
-	ch     chan *zrpc.Pack
-	sendCh chan *sendItem
+	ch chan *zrpc.Pack
 }
 
 func newStreamChannel(base *_methodChannel) *streamChannel {
 	return &streamChannel{
 		_methodChannel: base,
 
-		ch:     make(chan *zrpc.Pack, 1),
-		sendCh: make(chan *sendItem),
+		ch: make(chan *zrpc.Pack, 1),
 	}
 }
 
 func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 	defer s._methodChannel.release()
 	defer close(s.ch)
-	defer close(s.sendCh)
 
 	var readWriterCloser io.ReadWriteCloser
 	readWriterCloser, ok := args[len(args)-1].Interface().(io.ReadWriteCloser)
@@ -437,12 +429,16 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 	}
 	pack.Set(zrpc.MESSAGEID, s.MsgID())
 	pack.SetMethodName(s.method.methodName)
-	nid, err := s.manager.Send(pack)
+	_, err = s.manager.Send(pack)
 	if err != nil {
 		return s.errResult(err)
 	}
 
-	go s.read(ctx, readWriterCloser)
+	var buf [4096]byte
+	var eof bool
+	tmpCh := make(chan struct{}, 1)
+	defer close(tmpCh)
+	tmpCh <- struct{}{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -472,52 +468,38 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 				}
 				return results
 			}
-		case sendData := <-s.sendCh:
-			if sendData.err != nil {
-				pack.Stage = zrpc.STREAM_END
-				pack.Args = nil
-				if err := s.manager.SpecifySend(nid, pack); err != nil {
+		case <-tmpCh:
+			// 这里有问题 。。。。。。。。
+			n, err := readWriterCloser.Read(buf[:])
+			if err != nil {
+				if err != io.EOF {
+					pack.Stage = zrpc.STREAM_END
+					pack.Args = nil
+					_, err = s.manager.Send(pack)
+					if err != nil {
+						return s.errResult(err)
+					}
 					return s.errResult(err)
+				} else {
+					eof = true
+					pack.Stage = zrpc.STREAM_END
+					pack.Args = nil
+					_, err = s.manager.Send(pack)
+					if err != nil {
+						return s.errResult(err)
+					}
+					break
 				}
-				if sendData.err != io.EOF {
-					return s.errResult(err)
-				}
-			} else {
-				err = s.manager.SpecifySend(nid, sendData.p)
-				if err != nil {
-					return s.errResult(err)
-				}
+			}
+			pack.Stage = zrpc.STREAM
+			pack.Args = [][]byte{buf[:n]}
+			_, err = s.manager.Send(pack)
+			if err != nil {
+				return s.errResult(err)
 			}
 		}
-	}
-}
-
-func (s *streamChannel) read(ctx context.Context, r io.Reader) {
-	var buf [4096]byte
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			n, err := r.Read(buf[:])
-			if err != nil {
-				s.sendCh <- &sendItem{
-					err: err,
-				}
-				return
-			}
-
-			tmp := make([]byte, n)
-			copy(tmp, buf[:n])
-			pack := &zrpc.Pack{
-				Stage: zrpc.STREAM,
-				Args:  [][]byte{tmp},
-			}
-			pack.Set(zrpc.MESSAGEID, s.MsgID())
-			pack.SetMethodName(s.method.methodName)
-			s.sendCh <- &sendItem{
-				p: pack,
-			}
+		if !eof {
+			tmpCh <- struct{}{}
 		}
 	}
 }

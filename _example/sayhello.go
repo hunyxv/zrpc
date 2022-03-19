@@ -156,7 +156,7 @@ func (s *SayHello) Stream(ctx context.Context, count int, rw io.ReadWriteCloser)
 			req := RequestRespone{
 				Index: j,
 			}
-			log.Printf("send: %v", req)
+			log.Printf("send: %d", j)
 			raw, _ := json.Marshal(req)
 			for k := 0; k < len(raw); {
 				n, err := writer.Write(raw[k:])
@@ -169,23 +169,19 @@ func (s *SayHello) Stream(ctx context.Context, count int, rw io.ReadWriteCloser)
 		}
 		writer.Flush()
 
-		for {
+		for exit := false; exit; {
+			exit = true
 			i := <-ch
 			store[i] = true
-			allTrue := true
 			for _, v := range store {
 				if !v {
-					allTrue = false
+					exit = false
+					break
 				}
-			}
-			if allTrue {
-				break
 			}
 		}
 	}
 
-	log.Println("rw closed")
-	rw.Close()
 	wg.Wait()
 	log.Println("stream stop ...")
 	return nil

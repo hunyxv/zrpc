@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"sync"
 	"time"
 
@@ -143,19 +142,18 @@ func main() {
 		wg.Wait()
 	case "Stream":
 		count := 100
-		readerCloser, writerCloser, _ := os.Pipe()
-		readerCloser2, writerCloser2, _ := os.Pipe()
+		readerCloser, writerCloser := io.Pipe()
+		readerCloser2, writerCloser2 := io.Pipe()
 		rw := readeWriteCloser{
 			Reader: readerCloser,
 			Writer: writerCloser2,
-			Closer: writerCloser,
+			Closer: writerCloser2,
 		}
 
 		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer rw.Close()
 			r := bufio.NewReader(readerCloser2)
 			for {
 				data, _, err := r.ReadLine()
@@ -164,7 +162,7 @@ func main() {
 				}
 				var req example.RequestRespone
 				json.Unmarshal(data, &req)
-				log.Printf("req: %+v", req)
+				log.Printf("%+v", req)
 				writerCloser.Write(data)
 				writerCloser.Write([]byte{'\n'})
 			}
@@ -179,7 +177,7 @@ func main() {
 
 type readeWriteCloser struct {
 	io.Reader
-	io.Writer
+	io.Writer 
 	io.Closer
 }
 
