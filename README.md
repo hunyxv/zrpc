@@ -33,11 +33,11 @@ make && make install
 
 ```golang
 type ISayHello interface {
-	SayHello(ctx context.Context, name string) (string, error)
+    SayHello(ctx context.Context, name string) (string, error)
 }
 
 type SayHelloProxy struct {
-	SayHello func(ctx context.Context, name string) (string, error)
+    SayHello func(ctx context.Context, name string) (string, error)
 }
 ```
 
@@ -46,14 +46,14 @@ type SayHelloProxy struct {
 package main
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "os/signal"
+    "syscall"
 
-	"github.com/hunyxv/zrpc"
+    "github.com/hunyxv/zrpc"
 )
 
 var _ ISayHello = (*SayHello)(nil)
@@ -61,32 +61,32 @@ var _ ISayHello = (*SayHello)(nil)
 type SayHello struct{}
 
 func (s *SayHello) SayHello(ctx context.Context, name string) (string, error) {
-	fmt.Println(name)
-	return fmt.Sprintf("Hello %s!", name), nil
+    fmt.Println(name)
+    return fmt.Sprintf("Hello %s!", name), nil
 }
 
 func main() {
-	var i *ISayHello
-	// 注册服务
-	err := zrpc.RegisterServer("sayhello", &SayHello{}, i)
-	if err != nil {
-		panic(err)
-	}
+    var i *ISayHello
+    // 注册服务
+    err := zrpc.RegisterServer("sayhello", &SayHello{}, i)
+    if err != nil {
+        panic(err)
+    }
 
-	// 注册多个服务
-	// err = zrpc.RegisterServer("sayhello2", &SayHello{}, i)
-	// if err != nil {
-	// 	panic(err)
-	// }
+    // 注册多个服务
+    // err = zrpc.RegisterServer("sayhello2", &SayHello{}, i)
+    // if err != nil {
+    //  panic(err)
+    // }
 
     // 启动服务
-	go zrpc.Run()
-	log.Println("server id: ", zrpc.DefaultNode.NodeID)
+    go zrpc.Run()
+    log.Println("server id: ", zrpc.DefaultNode.NodeID)
 
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	<-ch
-	zrpc.Close()
+    ch := make(chan os.Signal, 1)
+    signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+    <-ch
+    zrpc.Close()
 }
 
 /*
@@ -102,42 +102,42 @@ func main() {
 package main
 
 import (
-	"context"
-	"log"
-	"time"
+    "context"
+    "log"
+    "time"
 
-	"github.com/hunyxv/zrpc"
-	zrpcCli "github.com/hunyxv/zrpc/client"
+    "github.com/hunyxv/zrpc"
+    zrpcCli "github.com/hunyxv/zrpc/client"
 )
 
 func main() {
-	serverinfo := zrpc.DefaultNode
-	cli, err := zrpcCli.NewDirectClient(zrpcCli.ServerInfo{
-		ServerName:    serverinfo.ServiceName,
-		NodeID:        "32a168e5-a749-11ec-9bf9-00163e343ac0",   // 注意节点 id 为上面输出的 server id
-		LocalEndpoint: serverinfo.LocalEndpoint,
-		StateEndpoint: serverinfo.StateEndpoint,
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	go cli.Run()
-	defer cli.Close()
+    serverinfo := zrpc.DefaultNode
+    cli, err := zrpcCli.NewDirectClient(zrpcCli.ServerInfo{
+        ServerName:    serverinfo.ServiceName,
+        NodeID:        "32a168e5-a749-11ec-9bf9-00163e343ac0",   // 注意节点 id 为上面输出的 server id
+        LocalEndpoint: serverinfo.LocalEndpoint,
+        StateEndpoint: serverinfo.StateEndpoint,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    go cli.Run()
+    defer cli.Close()
 
-	time.Sleep(100 * time.Millisecond)
+    time.Sleep(100 * time.Millisecond)
 
-	sayHello := new(SayHelloProxy)
+    sayHello := new(SayHelloProxy)
     // 装饰一下
-	err = cli.Decorator("sayhello", sayHello, 3) // 重试次数为 3 次
+    err = cli.Decorator("sayhello", sayHello, 3) // 重试次数为 3 次
 
     // 调用 RPC 方法
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	resp, err := sayHello.SayHello(ctx, "Hunyxv")
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Println(resp)
+    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+    defer cancel()
+    resp, err := sayHello.SayHello(ctx, "Hunyxv")
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Println(resp)
 }
 ```
 
