@@ -13,5 +13,5 @@ go run client/main.go --fname=SayHello
 go run client/main.go --fname=YourName
 go run client/main.go --fname=StreamReq  // 流式请求
 go run client/main.go --fname=StreamRep  // 流式响应
-go run client/main.go --fname=stream     // 双向流式
+go run client/main.go --fname=Stream     // 双向流式
 ```
