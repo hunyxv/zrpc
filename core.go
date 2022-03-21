@@ -21,9 +21,9 @@ var (
 	ErrTooFewParam       = errors.New("zrpc: too few parameters")
 	ErrSubmitTimeout     = errors.New("zrpc: submit task timed out")
 
-	errType    = reflect.TypeOf(new(error)).Elem()
-	ctxType    = reflect.TypeOf(new(context.Context)).Elem()
-	readType   = reflect.TypeOf(new(io.Reader)).Elem()
+	errType         = reflect.TypeOf(new(error)).Elem()
+	ctxType         = reflect.TypeOf(new(context.Context)).Elem()
+	readType        = reflect.TypeOf(new(io.Reader)).Elem()
 	writeCloserType = reflect.TypeOf(new(io.WriteCloser)).Elem()
 )
 

@@ -32,13 +32,20 @@ type ISayHello interface {
 	StreamFunc(ctx context.Context, total int, rw io.ReadWriteCloser) error
 }
 
+type SayHelloProxy struct {
+	Hello          func(ctx context.Context, user *User) (string, error)
+	StreamReqFunc  func(ctx context.Context, reader io.Reader) (string, error)
+	StreamRespFunc func(ctx context.Context, num int, writer io.WriteCloser) error
+	StreamFunc     func(ctx context.Context, total int, rw io.ReadWriteCloser) error
+}
+
 var _ ISayHello = (*SayHello)(nil)
 
 type SayHello struct{}
 
 func (s *SayHello) Hello(ctx context.Context, user *User) (string, error) {
 	log.Printf("Hello, %s!\n", user.Name)
-	return "world", errors.New("a error")
+	return "world", nil
 }
 
 func (s *SayHello) StreamReqFunc(ctx context.Context, reader io.Reader) (string, error) {
@@ -145,7 +152,7 @@ func (s *SayHello) StreamFunc(ctx context.Context, total int, rw io.ReadWriteClo
 // 空闲服务
 func TestRunserverIdle(t *testing.T) {
 	var i *ISayHello
-	err := zrpc.RegisterServer("sayhello/", &SayHello{}, i)
+	err := zrpc.RegisterServer("sayhello", &SayHello{}, i)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +171,7 @@ func TestRunserverBusy(t *testing.T) {
 	rpcInstance := zrpc.NewRPCInstance()
 	var i *ISayHello
 	server := zrpc.NewSvcMultiplexer(rpcInstance, zrpc.WithLogger(&logger{}), zrpc.WithNodeInfo(zrpc.Node{
-		ServiceName:     "222222",
+		ServiceName:     "testdata",
 		NodeID:          "22222222-2222-2222-2222-222222222222", // 为了测试，节点 id 设置为 222...
 		LocalEndpoint:   zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10090},
 		ClusterEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10091},
@@ -174,7 +181,7 @@ func TestRunserverBusy(t *testing.T) {
 	zrpc.DefaultNode.NodeID = "11111111-1111-1111-1111-111111111111"
 	server.AddPeerNode(&zrpc.DefaultNode) // 添加上面那个空闲节点
 	t.Log(zrpc.DefaultNode.ServiceName)
-	err := rpcInstance.RegisterServer("sayhello/", &SayHello{}, i)
+	err := rpcInstance.RegisterServer("sayhello", &SayHello{}, i)
 	if err != nil {
 		t.Fatal(err)
 	}

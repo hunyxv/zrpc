@@ -8,7 +8,7 @@ import (
 )
 
 type channelManager struct {
-	channels map[string]*channels // method name: channels
+	channels map[string]*sync.Map // method name: channels
 	zconn    zConnecter
 	c        chan struct{}
 
@@ -17,7 +17,7 @@ type channelManager struct {
 
 func newChannelManager(conn zConnecter) *channelManager {
 	manager := &channelManager{
-		channels: make(map[string]*channels),
+		channels: make(map[string]*sync.Map),
 		zconn:    conn,
 		c:        make(chan struct{}),
 	}
@@ -39,18 +39,18 @@ func (manager *channelManager) start() {
 			}
 			manager.mutex.RUnlock()
 			msgid := p.Get(zrpc.MESSAGEID)
-			ch, ok := chs.load(msgid)
+			ch, ok := chs.Load(msgid)
 			if !ok {
 				log.Printf("[zrpc-cli]: returned result cannot find consumer")
 				continue
 			}
 
-			ch.Receive(p)
+			ch.(methodChannel).Receive(p)
 		}
 	}
 }
 
-func (manager *channelManager) getChannels(methodName string) *channels {
+func (manager *channelManager) getChannels(methodName string) *sync.Map {
 	manager.mutex.RLock()
 	chs, ok := manager.channels[methodName]
 	if !ok {
@@ -58,7 +58,7 @@ func (manager *channelManager) getChannels(methodName string) *channels {
 		manager.mutex.Lock()
 		chs, ok = manager.channels[methodName]
 		if !ok {
-			chs = &channels{m: make(map[string]methodChannel)}
+			chs = new(sync.Map)
 			manager.channels[methodName] = chs
 		}
 		manager.mutex.Unlock()
@@ -71,12 +71,12 @@ func (manager *channelManager) getChannels(methodName string) *channels {
 
 func (manager *channelManager) insertNewChannel(methodName string, ch methodChannel) {
 	chs := manager.getChannels(methodName)
-	chs.insert(ch.MsgID(), ch)
+	chs.Store(ch.MsgID(), ch)
 }
 
 func (manager *channelManager) removeChannel(methodName string, msgid string) {
 	chs := manager.getChannels(methodName)
-	chs.remove(msgid)
+	chs.Delete(msgid)
 }
 
 // Send 发送 pack
@@ -94,6 +94,10 @@ func (manager *channelManager) Recv(data []byte) {
 }
 
 func (manager *channelManager) Close() {
-	close(manager.c)
+	select {
+	case <-manager.c:
+	default:
+		close(manager.c)
+	}
 	return
 }

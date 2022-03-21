@@ -40,31 +40,6 @@ type methodChannel interface {
 	Receive(p *zrpc.Pack)
 }
 
-type channels struct {
-	m map[string]methodChannel // messageid:channel
-
-	mutex sync.RWMutex
-}
-
-func (c *channels) insert(msgid string, ch methodChannel) {
-	c.mutex.Lock()
-	c.m[msgid] = ch
-	c.mutex.Unlock()
-}
-
-func (c *channels) load(msgid string) (methodChannel, bool) {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-	ch, ok := c.m[msgid]
-	return ch, ok
-}
-
-func (c *channels) remove(msgid string) {
-	c.mutex.Lock()
-	delete(c.m, msgid)
-	c.mutex.Unlock()
-}
-
 type _methodChannel struct {
 	msgid   string
 	method  *method
