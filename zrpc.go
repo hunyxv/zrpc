@@ -16,12 +16,19 @@ var (
 )
 
 func init() {
+	var realIP string
+	ips, _ := getLocalIps()
+	if len(ips) > 0 {
+		realIP = ips[0]
+	} else {
+		realIP = "0.0.0.0"
+	}
 	DefaultNode = Node{
 		ServiceName:     getServerName(),
 		NodeID:          uuid.NewUUID().String(),
-		LocalEndpoint:   Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10080},
-		ClusterEndpoint: Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10081},
-		StateEndpoint:   Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10082},
+		LocalEndpoint:   Endpoint{Scheme: "tcp", Host: realIP, Port: 10080},
+		ClusterEndpoint: Endpoint{Scheme: "tcp", Host: realIP, Port: 10081},
+		StateEndpoint:   Endpoint{Scheme: "tcp", Host: realIP, Port: 10082},
 		IsIdle:          true,
 	}
 }

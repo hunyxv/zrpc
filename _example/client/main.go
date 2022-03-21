@@ -26,25 +26,42 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+var etcdEndpoint = flag.String("etcd", "", "etcd endpoint")
 var methodName = flag.String("fname", "SayHello", "called method function name")
 
 func main() {
 	flag.Parse()
+
 	// zrpc client
-	cli, err := zrpcCli.NewDirectClient(zrpcCli.ServerInfo{
-		ServerName:    "example",
-		NodeID:        "1111-111111-11111111",
-		LocalEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10080},
-		StateEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10082},
-	})
+	var err error
+	var cli *zrpcCli.ZrpcClient
+	if *etcdEndpoint == "" {
+		cli, err = zrpcCli.NewDirectClient(zrpcCli.ServerInfo{
+			ServerName:    "example",
+			NodeID:        "1111-111111-11111111",
+			LocalEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10080},
+			StateEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10082},
+		})
+		// 启动后先 sleep 100 ms
+		time.Sleep(100 * time.Millisecond)
+	} else {
+		discover, err := zrpc.NewEtcdDiscover(&zrpc.DiscoverConfig{
+			Registries:    []string{*etcdEndpoint},
+			ServicePrefix: "/zrpc",
+			ServiceName:   zrpc.DefaultNode.ServiceName,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		cli, err = zrpcCli.NewClient(discover)
+		// 启动后先 sleep 100 ms
+		time.Sleep(1 * time.Second)
+	}
+
 	if err != nil {
 		log.Fatal(err)
 	}
-	// 启动client
-	go cli.Run()
 	defer cli.Close()
-	// 启动后先 sleep 100 ms
-	time.Sleep(100 * time.Millisecond)
 
 	// trace 相关的：
 	tp, err := tracerProvider("http://localhost:14268/api/traces")

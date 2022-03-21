@@ -19,6 +19,7 @@ import (
 
 var (
 	ErrClientConnectClosed = errors.New("client connect is closed")
+	ErrNoServer            = errors.New("no service can be invoked")
 )
 
 type zConnecter interface {
@@ -361,12 +362,18 @@ func (manager *connectManager) AddOrUpdate(nodeid string, metadata []byte) error
 	manager.svcSoc.Connect(node.LocalEndpoint.String())
 	manager.svcSoc.Connect(node.StateEndpoint.String())
 	manager.servicesMap[nodeid] = node
-	for i, node := range manager.services {
-		if node.NodeID == node.NodeID {
+	var has bool
+	for i, n := range manager.services {
+		if n.NodeID == node.NodeID {
 			manager.services[i] = node
+			has = true
 			break
 		}
 	}
+	if !has {
+		manager.services = append(manager.services, node)
+	}
+
 	manager.servicesExpir[node.NodeID] = time.Now().Add(manager.hbInterval*2 + time.Second*2)
 	return nil
 }
@@ -398,6 +405,9 @@ func (manager *connectManager) Send(p *zrpc.Pack) (string, error) {
 	if manager.isClosed() {
 		return "", ErrClientConnectClosed
 	}
+	if len(manager.services) == 0 {
+		return "", ErrNoServer
+	}
 	msgid := p.Get(zrpc.MESSAGEID)
 	if msgid == "" {
 		msgid = zrpc.NewMessageID()
@@ -412,6 +422,9 @@ func (manager *connectManager) Send(p *zrpc.Pack) (string, error) {
 
 	manager.mutex.RLock()
 	defer manager.mutex.RUnlock()
+	if len(manager.services) == 0 {
+		return "", ErrNoServer
+	}
 	random := defaultHashKeyFunc(msgid)
 	i := random % len(manager.services)
 	node := manager.services[i]

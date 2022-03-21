@@ -1,26 +1,30 @@
 package client
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/hunyxv/zrpc"
+	"github.com/pborman/uuid"
 )
 
 var (
 	once sync.Once
 
-	client *zrpcClient
+	client *ZrpcClient
 )
 
-type zrpcClient struct {
+type ZrpcClient struct {
 	chanManager      *channelManager
 	zconn            zConnecter
 	serviceDiscovery zrpc.ServiceDiscover
+	services         sync.Map
 	opts             *options
 	isClosed         bool
 }
 
-func NewDirectClient(server ServerInfo, opts ...Option) (*zrpcClient, error) {
+// NewDirectClient 根据 rpc 服务地址连接的客户端（只适用于单节点服务）
+func NewDirectClient(server ServerInfo, opts ...Option) (*ZrpcClient, error) {
 	var err error
 	once.Do(func() {
 		defopts := &options{
@@ -36,20 +40,23 @@ func NewDirectClient(server ServerInfo, opts ...Option) (*zrpcClient, error) {
 		if err != nil {
 			return
 		}
-		client = &zrpcClient{
+		client = &ZrpcClient{
 			opts:        defopts,
 			zconn:       conn,
 			chanManager: newChannelManager(conn),
 		}
+		go client.chanManager.start()
 	})
 	return client, err
 }
 
-func NewClient(discover zrpc.ServiceDiscover, opts ...Option) (*zrpcClient, error) {
+// NewClient 使用注册/发现中心创建客户端
+func NewClient(discover zrpc.ServiceDiscover, opts ...Option) (*ZrpcClient, error) {
 	var err error
 	once.Do(func() {
 		defopts := &options{
 			Discover: discover,
+			Identity: uuid.NewRandom().String(),
 		}
 		for _, f := range opts {
 			f(defopts)
@@ -60,35 +67,47 @@ func NewClient(discover zrpc.ServiceDiscover, opts ...Option) (*zrpcClient, erro
 		if err != nil {
 			return
 		}
-		client = &zrpcClient{
+		client = &ZrpcClient{
 			opts:             defopts,
 			zconn:            conn,
 			serviceDiscovery: discover,
 			chanManager:      newChannelManager(conn),
 		}
 		go client.serviceDiscovery.Watch(conn)
+		go client.chanManager.start()
 	})
 	return client, err
 }
 
 // Decorator 将 server proxy 装饰为可调用 server
-func (cli *zrpcClient) Decorator(name string, i interface{}, retry int) error {
-	proxy := newInstanceProxy(name, i, cli.chanManager)
-	return proxy.init()
-}
-
-func (cli *zrpcClient) Run() {
-	for !cli.isClosed {
-		cli.chanManager.start()
+func (cli *ZrpcClient) Decorator(name string, i interface{}, retry int) error {
+	_, ok := cli.services.LoadOrStore(name, i)
+	if ok {
+		return fmt.Errorf("service [%s] is exists", name)
 	}
+
+	proxy := newInstanceProxy(name, i, cli.chanManager)
+	err := proxy.init()
+	if err != nil {
+		cli.services.Delete(name)
+		return err
+	}
+
+	return nil
 }
 
-func (cli *zrpcClient) Close() error {
+// GetSerivce 获取已注册 rpc 服务实例以供使用
+func (cli *ZrpcClient) GetSerivce(name string) (interface{}, bool) {
+	return cli.services.Load(name)
+}
+
+func (cli *ZrpcClient) Close() error {
 	if cli.serviceDiscovery != nil {
 		cli.serviceDiscovery.Stop()
 	}
-	cli.isClosed = true
 
+	cli.isClosed = true
 	cli.zconn.Close()
+	cli.chanManager.Close()
 	return nil
 }
