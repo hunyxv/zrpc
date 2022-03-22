@@ -1,6 +1,8 @@
 package client
 
 import (
+	"time"
+
 	"github.com/hunyxv/zrpc"
 )
 
@@ -14,29 +16,47 @@ type ServerInfo struct {
 type Option func(opt *options)
 
 type options struct {
-	Discover   zrpc.ServiceDiscover // 服务发现组件
-	ServerAddr *ServerInfo          //
-	Identity   string               // client id
+	// MinIdleConns number of idle connection.
+	MinIdleConns int
+	// PoolSize Maximum number of socket connections.
+	PoolSize int
+	// ReuseCount upper limit for reuse of one connections.
+	ReuseCount int32
+	// Type of connection pool. true for FIFO pool, false for LIFO pool.
+	// Note that fifo has higher overhead compared to lifo.
+	PoolFIFO bool
+	// Amount of time client waits for connection if all connections
+	// are busy before returning an error.
+	// Default is 3 second.
+	PoolTimeout time.Duration
+	// IdleTimeout amount of time after which client closes idle connections.
+	// Default is 5 minutes.
+	IdleTimeout time.Duration
+	// 
+	IdleCheckFrequency time.Duration
+	// Connection age at which client retires (closes) the connection.
+	// Default is to not close aged connections.
+	MaxConnAge time.Duration
+	// 
+	OnClose func(*ZrpcClient) error
 }
 
-// WithDiscover 配置服务发现组件
-func WithDiscover(d zrpc.ServiceDiscover) Option {
+func WithPoolSize(size int) Option {
 	return func(opt *options) {
-		opt.Discover = d
+		if size == 0 {
+			size = 1
+		}
+
+		opt.PoolSize = size
 	}
 }
 
-// WithServerAddr 配置 rpc server 地址
-// 	如果配置了 服务发现组件，那么该设置不生效
-func WithServerAddr(s *ServerInfo) Option {
+func WithMinIdleCount(n int) Option {
 	return func(opt *options) {
-		opt.ServerAddr = s
-	}
-}
+		if n == 0 {
+			n = 1
+		}
 
-// WithIdentity 设置客户端id（不同客户端id不能相同）
-func WithIdentity(id string) Option {
-	return func(opt *options) {
-		opt.Identity = id
+		opt.MinIdleConns = n
 	}
 }

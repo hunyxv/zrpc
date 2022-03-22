@@ -12,15 +12,20 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+type packSender interface {
+	Send(p *zrpc.Pack) (string, error)
+	SpecifySend(id string, p *zrpc.Pack) error
+}
+
 var (
 	pool sync.Pool = sync.Pool{New: func() any {
 		return &_methodChannel{}
 	}}
 )
 
-func newMethodChannle(m *method, manager *channelManager) (methodChannel, error) {
+func newMethodChannle(m *method, sender packSender) (methodChannel, error) {
 	base := pool.Get().(*_methodChannel)
-	base.init(m, manager)
+	base.init(m, sender)
 	switch m.mode {
 	case zrpc.ReqRep:
 		return newReqRepChannel(base), nil
@@ -41,15 +46,15 @@ type methodChannel interface {
 }
 
 type _methodChannel struct {
-	msgid   string
-	method  *method
-	manager *channelManager
+	msgid  string
+	method *method
+	sender packSender
 }
 
-func (c *_methodChannel) init(m *method, manager *channelManager) {
+func (c *_methodChannel) init(m *method, sender packSender) {
 	c.msgid = zrpc.NewMessageID()
 	c.method = m
-	c.manager = manager
+	c.sender = sender
 }
 
 func (c *_methodChannel) errResult(err error) (results []reflect.Value) {
@@ -158,7 +163,7 @@ func (rr *reqRepChannel) Call(args []reflect.Value) []reflect.Value {
 	}
 	pack.Set(zrpc.MESSAGEID, rr.MsgID())
 	pack.SetMethodName(rr.method.methodName)
-	_, err = rr.manager.Send(pack)
+	_, err = rr.sender.Send(pack)
 	if err != nil {
 		return rr.errResult(err)
 	}
@@ -222,7 +227,7 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 	}
 	pack.Set(zrpc.MESSAGEID, sr.MsgID())
 	pack.SetMethodName(sr.method.methodName)
-	nid, err := sr.manager.Send(pack)
+	nid, err := sr.sender.Send(pack)
 	if err != nil {
 		return sr.errResult(err)
 	}
@@ -255,7 +260,7 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 				if err != io.EOF {
 					pack.Stage = zrpc.STREAM_END
 					pack.Args = nil
-					err = sr.manager.SpecifySend(nid, pack)
+					err = sr.sender.SpecifySend(nid, pack)
 					if err != nil {
 						return sr.errResult(err)
 					}
@@ -264,7 +269,7 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 					eof = true
 					pack.Stage = zrpc.STREAM_END
 					pack.Args = nil
-					err = sr.manager.SpecifySend(nid, pack)
+					err = sr.sender.SpecifySend(nid, pack)
 					if err != nil {
 						return sr.errResult(err)
 					}
@@ -273,7 +278,7 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 			}
 			pack.Stage = zrpc.STREAM
 			pack.Args = [][]byte{buf[:n]}
-			err = sr.manager.SpecifySend(nid, pack)
+			err = sr.sender.SpecifySend(nid, pack)
 			if err != nil {
 				return sr.errResult(err)
 			}
@@ -325,7 +330,7 @@ func (rs *reqStreamRepChannel) Call(args []reflect.Value) []reflect.Value {
 	}
 	pack.Set(zrpc.MESSAGEID, rs.MsgID())
 	pack.SetMethodName(rs.method.methodName)
-	_, err = rs.manager.Send(pack)
+	_, err = rs.sender.Send(pack)
 	if err != nil {
 		return rs.errResult(err)
 	}
@@ -412,7 +417,7 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 	}
 	pack.Set(zrpc.MESSAGEID, s.MsgID())
 	pack.SetMethodName(s.method.methodName)
-	nid, err := s.manager.Send(pack)
+	nid, err := s.sender.Send(pack)
 	if err != nil {
 		return s.errResult(err)
 	}
@@ -451,14 +456,14 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 			if sendData.err != nil {
 				pack.Stage = zrpc.STREAM_END
 				pack.Args = nil
-				if err := s.manager.SpecifySend(nid, pack); err != nil {
+				if err := s.sender.SpecifySend(nid, pack); err != nil {
 					return s.errResult(err)
 				}
 				if sendData.err != io.EOF {
 					return s.errResult(err)
 				}
 			} else {
-				err = s.manager.SpecifySend(nid, sendData.p)
+				err = s.sender.SpecifySend(nid, sendData.p)
 				if err != nil {
 					return s.errResult(err)
 				}

@@ -23,6 +23,11 @@ var (
 	writeCloserType = reflect.TypeOf(new(io.WriteCloser)).Elem()
 )
 
+type cliPool interface {
+	get(context.Context) (client, error)
+	put(client)
+}
+
 type method struct {
 	methodName  string
 	mode        zrpc.FuncMode
@@ -34,25 +39,24 @@ type instanceProxy struct {
 	InstanceName string      // 实例名称
 	instance     interface{} // 实例
 
-	channelManager *channelManager
+	cliPool cliPool
 }
 
-func newInstanceProxy(instanceName string, instance interface{}, chManager *channelManager) *instanceProxy {
+func newInstanceProxy(instanceName string, instance interface{}, p cliPool) *instanceProxy {
 	return &instanceProxy{
 		InstanceName: instanceName,
 		instance:     instance,
 
-		channelManager: chManager,
+		cliPool: p,
 	}
 }
 
 func (proxy *instanceProxy) init() error {
 	value := reflect.ValueOf(proxy.instance)
-	//_type := reflect.TypeOf(proxy.instance)
 	return proxy.replace(value, nil, 0)
 }
 
-func (proxy *instanceProxy) replace(v reflect.Value, t reflect.Type,  index int) error {
+func (proxy *instanceProxy) replace(v reflect.Value, t reflect.Type, index int) error {
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
@@ -121,21 +125,31 @@ func (proxy *instanceProxy) replace(v reflect.Value, t reflect.Type,  index int)
 	return nil
 }
 
+func (proxy *instanceProxy) returnErr(err error, m method) (results []reflect.Value) {
+	err = pkgerr.WithMessage(err, "[zrpc-cli]: failed to initialize channel")
+	for _, t := range m.resultTypes[:len(m.resultTypes)-1] {
+		r := reflect.New(t)
+		results = append(results, r)
+	}
+	results = append(results, reflect.ValueOf(err))
+	return
+}
+
 func (proxy *instanceProxy) MakeFunc(methodType reflect.Type, m method) reflect.Value {
 	return reflect.MakeFunc(methodType, func(args []reflect.Value) (results []reflect.Value) {
-		ch, err := newMethodChannle(&m, proxy.channelManager)
+		cli, err := proxy.cliPool.get(args[0].Interface().(context.Context))
 		if err != nil {
-			err = pkgerr.WithMessage(err, "[zrpc-cli]: failed to initialize channel")
-			for _, t := range m.resultTypes[:len(m.resultTypes)-1] {
-				r := reflect.New(t)
-				results = append(results, r)
-			}
-			results = append(results, reflect.ValueOf(err))
-			return
+			return proxy.returnErr(err, m)
+		}
+		defer proxy.cliPool.put(cli)
+
+		ch, err := newMethodChannle(&m, cli)
+		if err != nil {
+			return proxy.returnErr(err, m)
 		}
 
-		proxy.channelManager.insertNewChannel(m.methodName, ch)
-		defer proxy.channelManager.removeChannel(m.methodName, ch.MsgID())
+		cli.insertNewChannel(m.methodName, ch)
+		defer cli.removeChannel(m.methodName, ch.MsgID())
 		return ch.Call(args)
 	})
 }
