@@ -90,9 +90,9 @@ func main() {
 	defer cancel2()
 
 	log.Println("method name: ", *methodName)
-
+	now := time.Now()
 	var wg sync.WaitGroup
-	for i := 0; i < 500; i++ {
+	for i := 0; i < 109; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -187,6 +187,7 @@ func main() {
 		}()
 	}
 	wg.Wait()
+	log.Println(time.Since(now))
 }
 
 type readeWriteCloser struct {

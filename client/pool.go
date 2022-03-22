@@ -117,16 +117,26 @@ func NewDirectPool(server ServerInfo, opt ...Option) (*CliPool, error) {
 
 func (pool *CliPool) checkMinIdleCli() {
 	for pool.poolSize < pool.opt.PoolSize && pool.idleCliLen < pool.opt.MinIdleConns {
-		pool.addNewCli(false)
+		pool.poolSize++
+		pool.idleCliLen++
+		go func() {
+			if _, err := pool.addNewCli(); err != nil {
+				pool.mutex.Lock()
+				pool.poolSize--
+				pool.idleCliLen--
+				pool.mutex.Unlock()
+			}
+		}()
 	}
 }
 
-func (pool *CliPool) addNewCli(breaks bool) (*_cli, error) {
+func (pool *CliPool) addNewCli() (*_cli, error) {
 	cli, err := NewDirectClient(pool.serverInfo)
 	if err != nil {
 		return nil, err
 	}
 
+	time.Sleep(time.Millisecond)
 	now := time.Now()
 	c := &_cli{
 		ZrpcClient: cli,
@@ -135,7 +145,27 @@ func (pool *CliPool) addNewCli(breaks bool) (*_cli, error) {
 		createdAt:  now,
 		usedAt:     now.Unix(),
 	}
-	// time.Sleep(50 * time.Millisecond)
+
+	pool.clis = append(pool.clis, c)
+	pool.idleClis = append(pool.idleClis, c)
+	return c, nil
+}
+
+func (pool *CliPool) addNewCliWithLock(breaks bool) (*_cli, error) {
+	cli, err := NewDirectClient(pool.serverInfo)
+	if err != nil {
+		return nil, err
+	}
+
+	time.Sleep(time.Millisecond)
+	now := time.Now()
+	c := &_cli{
+		ZrpcClient: cli,
+		reuse:      pool.opt.ReuseCount,
+		reuseCount: pool.opt.ReuseCount,
+		createdAt:  now,
+		usedAt:     now.Unix(),
+	}
 
 	pool.mutex.Lock()
 	pool.clis = append(pool.clis, c)
@@ -207,7 +237,7 @@ func (pool *CliPool) get(ctx context.Context) (client, error) {
 		return cli, nil
 	}
 
-	cli, err := pool.addNewCli(true)
+	cli, err := pool.addNewCliWithLock(true)
 	if err != nil {
 		pool.freeTrun()
 		return nil, err
@@ -220,7 +250,7 @@ func (pool *CliPool) waitTurn(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-pool.queue:
+	case pool.queue <- struct{}{}:
 		return nil
 	default:
 	}

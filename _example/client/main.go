@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -32,15 +33,18 @@ var methodName = flag.String("fname", "SayHello", "called method function name")
 func main() {
 	flag.Parse()
 
+	ips, err := getLocalIps()
+	if err != nil {
+		panic(err)
+	}
 	// zrpc client
-	var err error
 	var cli *zrpcCli.ZrpcClient
 	if *etcdEndpoint == "" {
 		cli, err = zrpcCli.NewDirectClient(zrpcCli.ServerInfo{
 			ServerName:    "example",
 			NodeID:        "1111-111111-11111111",
-			LocalEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10080},
-			StateEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: "0.0.0.0", Port: 10082},
+			LocalEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: ips[0], Port: 10080},
+			StateEndpoint: zrpc.Endpoint{Scheme: "tcp", Host: ips[0], Port: 10082},
 		})
 		// 启动后先 sleep 100 ms
 		time.Sleep(100 * time.Millisecond)
@@ -104,94 +108,104 @@ func main() {
 	defer cancel2()
 
 	log.Println("method name: ", *methodName)
-	switch *methodName {
-	case "SayHello":
-		resp, err := proxy.SayHello(ctx, "hunyxv")
-		if err != nil {
-			log.Println("测试返回错误： ", err)
-			span.SetStatus(codes.Error, err.Error())
-		}
-		log.Println(resp)
-	case "YourName":
-		resp, err := proxy.YourName(ctx)
-		if err != nil {
-			log.Fatal("发生错误： ", err)
-			span.SetStatus(codes.Error, err.Error())
-		}
-		log.Println(resp)
-	case "StreamReq":
-		count := 100
-		readerCloser, writerCloser := io.Pipe()
-		var wg sync.WaitGroup
+	var wg sync.WaitGroup
+	now := time.Now()
+	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < count; i++ {
-				fmt.Fprintf(writerCloser, "line %d\n", i)
-			}
-			writerCloser.Close()
-		}()
-		resp, err := proxy.StreamReq(ctx, count, readerCloser)
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Println("succ? ", resp)
-		wg.Wait()
-	case "StreamRep":
-		count := 100
-		readerCloser, writerCloser := io.Pipe()
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			r := bufio.NewReader(readerCloser)
-			for {
-				data, _, err := r.ReadLine()
+			switch *methodName {
+			case "SayHello":
+				resp, err := proxy.SayHello(ctx, "hunyxv")
 				if err != nil {
-					return
+					log.Println("测试返回错误： ", err)
+					span.SetStatus(codes.Error, err.Error())
 				}
-				log.Println(string(data))
-			}
-		}()
-		err := proxy.StreamRep(ctx, count, writerCloser)
-		if err != nil {
-			log.Fatal(err)
-		}
-		wg.Wait()
-	case "Stream":
-		count := 100
-		readerCloser, writerCloser, _ := os.Pipe()
-		readerCloser2, writerCloser2, _ := os.Pipe()
-		rw := readeWriteCloser{
-			Reader: readerCloser,
-			Writer: writerCloser2,
-			Closer: writerCloser,
-		}
+				log.Println(resp)
+			case "YourName":
+				resp, err := proxy.YourName(ctx)
+				if err != nil {
+					log.Fatal("发生错误： ", err)
+					span.SetStatus(codes.Error, err.Error())
+				}
+				log.Println(resp)
+			case "StreamReq":
+				count := 100
+				readerCloser, writerCloser := io.Pipe()
+				var wg sync.WaitGroup
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for i := 0; i < count; i++ {
+						fmt.Fprintf(writerCloser, "line %d\n", i)
+					}
+					writerCloser.Close()
+				}()
+				resp, err := proxy.StreamReq(ctx, count, readerCloser)
+				if err != nil {
+					log.Fatal(err)
+				}
+				log.Println("succ? ", resp)
+				wg.Wait()
+			case "StreamRep":
+				count := 100
+				readerCloser, writerCloser := io.Pipe()
+				var wg sync.WaitGroup
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					r := bufio.NewReader(readerCloser)
+					for {
+						data, _, err := r.ReadLine()
+						if err != nil {
+							return
+						}
+						log.Println(string(data))
+					}
+				}()
+				err := proxy.StreamRep(ctx, count, writerCloser)
+				if err != nil {
+					log.Fatal(err)
+				}
+				wg.Wait()
+			case "Stream":
+				count := 100
+				readerCloser, writerCloser, _ := os.Pipe()
+				readerCloser2, writerCloser2, _ := os.Pipe()
+				rw := readeWriteCloser{
+					Reader: readerCloser,
+					Writer: writerCloser2,
+					Closer: writerCloser,
+				}
 
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer rw.Close()
-			r := bufio.NewReader(readerCloser2)
-			for {
-				data, _, err := r.ReadLine()
+				var wg sync.WaitGroup
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer rw.Close()
+					r := bufio.NewReader(readerCloser2)
+					for {
+						data, _, err := r.ReadLine()
+						if err != nil {
+							return
+						}
+						var req example.RequestRespone
+						json.Unmarshal(data, &req)
+						log.Printf("req: %+v", req)
+						writerCloser.Write(data)
+						writerCloser.Write([]byte{'\n'})
+					}
+				}()
+				err := proxy.Stream(ctx, count, rw)
 				if err != nil {
-					return
+					log.Fatal(err)
 				}
-				var req example.RequestRespone
-				json.Unmarshal(data, &req)
-				log.Printf("req: %+v", req)
-				writerCloser.Write(data)
-				writerCloser.Write([]byte{'\n'})
+			default:
 			}
 		}()
-		err := proxy.Stream(ctx, count, rw)
-		if err != nil {
-			log.Fatal(err)
-		}
-	default:
 	}
+	wg.Wait()
+	log.Println(time.Since(now))
 }
 
 type readeWriteCloser struct {
@@ -224,4 +238,22 @@ func tracerProvider(url string) (*tracesdk.TracerProvider, error) {
 		)),
 	)
 	return tp, nil
+}
+
+func getLocalIps() ([]string, error) {
+	interfaceAddr, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+
+	ips := []string{}
+	for _, addr := range interfaceAddr {
+		ipNet, isVailIpNet := addr.(*net.IPNet)
+		if isVailIpNet && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				ips = append(ips, ipNet.IP.String())
+			}
+		}
+	}
+	return ips, nil
 }
