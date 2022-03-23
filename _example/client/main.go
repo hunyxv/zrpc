@@ -103,7 +103,7 @@ func main() {
 	ctx = trace.ContextWithSpan(ctx, span)
 
 	// 调用rpc服务
-	ctx, cancel2 := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel2 := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel2()
 
 	log.Println("method name: ", *methodName)
@@ -193,7 +193,6 @@ func main() {
 						var req example.RequestRespone
 						json.Unmarshal(data, &req)
 						log.Printf("req: %+v", req)
-						time.Sleep(500 * time.Millisecond)
 						data = append(data, '\n')
 						writerCloser.Write(data)
 					}
