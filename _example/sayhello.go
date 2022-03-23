@@ -150,6 +150,7 @@ func (s *SayHello) Stream(ctx context.Context, count int, rw io.ReadWriteCloser)
 
 	writer := bufio.NewWriter(rw)
 	store := map[int]bool{}
+Loop:
 	for i := 0; i < count; i += 5 {
 		for j := i; j < i+5; j++ {
 			store[j] = false
@@ -170,7 +171,10 @@ func (s *SayHello) Stream(ctx context.Context, count int, rw io.ReadWriteCloser)
 		writer.Flush()
 
 		for {
-			i := <-ch
+			i, ok := <-ch
+			if !ok {
+				break Loop
+			}
 			store[i] = true
 			allTrue := true
 			for _, v := range store {

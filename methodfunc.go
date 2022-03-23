@@ -28,7 +28,7 @@ type methodFunc interface {
 	FuncMode() FuncMode
 	Call(p *Pack)
 	Next(params [][]byte)
-	End()
+	End(err error)
 	Release() error
 }
 
@@ -190,7 +190,7 @@ func (f *_methodFunc) spanEnd() {
 func (f *_methodFunc) FuncMode() FuncMode { return -1 }
 func (f *_methodFunc) Call(p *Pack)       {}
 func (f *_methodFunc) Next([][]byte)      {}
-func (f *_methodFunc) End()               {}
+func (f *_methodFunc) End(error)          {}
 func (f *_methodFunc) Release() error     { pool.Put(f); return nil }
 
 // ReqRepFunc 请求应答类型函数
@@ -315,7 +315,7 @@ func (srf *streamReqRepFunc) Next(data [][]byte) {
 	}
 }
 
-func (srf *streamReqRepFunc) End() {
+func (srf *streamReqRepFunc) End(error) {
 	if err := srf.Release(); err != nil {
 		srf.reply.SendError(srf.req, err)
 	}
@@ -594,7 +594,7 @@ func (sf *streamFunc) Next(data [][]byte) {
 }
 
 // End 	请求流结束
-func (sf *streamFunc) End() {
+func (sf *streamFunc) End(error) {
 	sf.lock.Lock()
 	defer sf.lock.Unlock()
 	if sf.reqStreamIsEnd {
@@ -607,6 +607,6 @@ func (sf *streamFunc) End() {
 
 func (sf *streamFunc) Release() error {
 	defer sf._methodFunc.Release()
-	sf.End()
+	sf.End(nil)
 	return sf.Close()
 }

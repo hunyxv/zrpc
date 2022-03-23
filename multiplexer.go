@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"math/rand"
 	"strconv"
@@ -211,7 +212,7 @@ func (m *SvcMultiplexer) dispatcher() {
 				if ok {
 					m.submitTask(func() {
 						if methodFunc, ok := mf.(methodFunc); ok {
-							methodFunc.End()
+							methodFunc.End(nil)
 						}
 					})
 				} else {

@@ -66,8 +66,6 @@ func (er *etcdRegister) Register() {
 					er.leaseID = 0
 					continue
 				}
-
-				er.cnf.Logger.Debugf("etcd register: endpoind: %s renewal succ", er.cnf.ServerInfo.LocalEndpoint)
 			} else {
 				if err := er.register(); err != nil {
 					er.cnf.Logger.Warnf("etcd register: endpoind: %s register fail, err: %v", er.cnf.ServerInfo.LocalEndpoint, err)

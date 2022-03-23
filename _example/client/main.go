@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -104,13 +103,13 @@ func main() {
 	ctx = trace.ContextWithSpan(ctx, span)
 
 	// 调用rpc服务
-	ctx, cancel2 := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel2 := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel2()
 
 	log.Println("method name: ", *methodName)
 	var wg sync.WaitGroup
 	now := time.Now()
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 1; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -170,8 +169,8 @@ func main() {
 				wg.Wait()
 			case "Stream":
 				count := 100
-				readerCloser, writerCloser, _ := os.Pipe()
-				readerCloser2, writerCloser2, _ := os.Pipe()
+				readerCloser, writerCloser := io.Pipe()
+				readerCloser2, writerCloser2 := io.Pipe()
 				rw := readeWriteCloser{
 					Reader: readerCloser,
 					Writer: writerCloser2,
@@ -192,12 +191,14 @@ func main() {
 						var req example.RequestRespone
 						json.Unmarshal(data, &req)
 						log.Printf("req: %+v", req)
+						time.Sleep(500 * time.Millisecond)
+						data = append(data, '\n')
 						writerCloser.Write(data)
-						writerCloser.Write([]byte{'\n'})
 					}
 				}()
 				err := proxy.Stream(ctx, count, rw)
 				if err != nil {
+					time.Sleep(time.Millisecond)
 					log.Fatal(err)
 				}
 			default:

@@ -241,12 +241,14 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 	for {
 		select {
 		case <-ctx.Done():
-			return sr.errResult(ctx.Err())
+			err := ctx.Err()
+			pack.Stage = zrpc.STREAM_END
+			pack.Args = [][]byte{[]byte(err.Error())}
+			sr.sender.SpecifySend(nid, pack)
+			return sr.errResult(err)
 		case retPack := <-sr.ch:
 			if retPack.Stage == zrpc.ERROR {
-				var errStr string
-				msgpack.Unmarshal(retPack.Args[0], &errStr)
-				return sr.errResult(errors.New(errStr))
+				return sr.errResult(errors.New(string(retPack.Args[0])))
 			}
 
 			results, err := sr.unmarshalResult(retPack.Args)
@@ -258,17 +260,14 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 			n, err := reader.Read(buf[:])
 			if err != nil {
 				pack.Stage = zrpc.STREAM_END
-				pack.Args = nil
-				if err := sr.sender.SpecifySend(nid, pack); err != nil {
-					return sr.errResult(err)
-				}
-
 				if err != io.EOF {
+					pack.Args = [][]byte{[]byte(err.Error())}
+					sr.sender.SpecifySend(nid, pack)
 					return sr.errResult(err)
-				} else {
-					eof = true
-					break
 				}
+				sr.sender.SpecifySend(nid, pack)
+				eof = true
+				break
 			}
 			pack.Stage = zrpc.STREAM
 			pack.Args = [][]byte{buf[:n]}
@@ -324,7 +323,7 @@ func (rs *reqStreamRepChannel) Call(args []reflect.Value) []reflect.Value {
 	}
 	pack.Set(zrpc.MESSAGEID, rs.MsgID())
 	pack.SetMethodName(rs.method.methodName)
-	_, err = rs.sender.Send(pack)
+	nid, err := rs.sender.Send(pack)
 	if err != nil {
 		return rs.errResult(err)
 	}
@@ -332,7 +331,11 @@ func (rs *reqStreamRepChannel) Call(args []reflect.Value) []reflect.Value {
 	for {
 		select {
 		case <-ctx.Done():
-			return rs.errResult(ctx.Err())
+			err := ctx.Err()
+			pack.Stage = zrpc.STREAM_END
+			pack.Args = [][]byte{[]byte(err.Error())}
+			rs.sender.SpecifySend(nid, pack)
+			return rs.errResult(err)
 		case retPack := <-rs.ch:
 			switch retPack.Stage {
 			case zrpc.ERROR:
@@ -420,7 +423,11 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 	for {
 		select {
 		case <-ctx.Done():
-			return s.errResult(ctx.Err())
+			err := ctx.Err()
+			pack.Stage = zrpc.STREAM_END
+			pack.Args = [][]byte{[]byte(err.Error())}
+			s.sender.SpecifySend(nid, pack)
+			return s.errResult(err)
 		case retPack := <-s.ch:
 			switch retPack.Stage {
 			case zrpc.ERROR:
@@ -449,13 +456,12 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 		case sendData := <-s.sendCh:
 			if sendData.err != nil {
 				pack.Stage = zrpc.STREAM_END
-				pack.Args = nil
-				if err := s.sender.SpecifySend(nid, pack); err != nil {
-					return s.errResult(err)
-				}
 				if sendData.err != io.EOF {
+					pack.Args = [][]byte{[]byte(sendData.err.Error())}
+					s.sender.SpecifySend(nid, pack)
 					return s.errResult(sendData.err)
 				}
+				s.sender.SpecifySend(nid, pack)
 			} else {
 				err = s.sender.SpecifySend(nid, sendData.p)
 				if err != nil {
