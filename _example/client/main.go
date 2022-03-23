@@ -109,7 +109,7 @@ func main() {
 	log.Println("method name: ", *methodName)
 	var wg sync.WaitGroup
 	now := time.Now()
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -131,13 +131,15 @@ func main() {
 			case "StreamReq":
 				count := 100
 				readerCloser, writerCloser := io.Pipe()
+				bufw := bufio.NewWriter(writerCloser) // 使用写缓存，减少数据包的传递
 				var wg sync.WaitGroup
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
 					for i := 0; i < count; i++ {
-						fmt.Fprintf(writerCloser, "line %d\n", i)
+						fmt.Fprintf(bufw, "line %d\n", i)
 					}
+					bufw.Flush()
 					writerCloser.Close()
 				}()
 				resp, err := proxy.StreamReq(ctx, count, readerCloser)
@@ -153,7 +155,7 @@ func main() {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					r := bufio.NewReader(readerCloser)
+					r := bufio.NewReader(readerCloser) // 读缓存
 					for {
 						data, _, err := r.ReadLine()
 						if err != nil {

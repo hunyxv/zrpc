@@ -247,7 +247,7 @@ type streamReqRepFunc struct {
 	req *Pack
 	r   io.ReadCloser
 	w   io.WriteCloser
-	buf *bufio.ReadWriter
+	bufw *bufio.Writer
 
 	isClosed bool
 	lock     sync.Locker
@@ -256,13 +256,13 @@ type streamReqRepFunc struct {
 func newStreamReqRepFunc(base *_methodFunc) (methodFunc, error) {
 	readCloser, writerCloser := io.Pipe()
 
-	buf := bufio.NewReadWriter(bufio.NewReader(readCloser), bufio.NewWriter(writerCloser))
+	bufw := bufio.NewWriter(writerCloser)//bufio.NewReadWriter(bufio.NewReader(readCloser), bufio.NewWriter(writerCloser))
 	return &streamReqRepFunc{
 		_methodFunc: base,
 
 		r:   readCloser,
 		w:   writerCloser,
-		buf: buf,
+		bufw: bufw,
 
 		lock: spinlock.NewSpinLock(),
 	}, nil
@@ -282,9 +282,9 @@ func (srf *streamReqRepFunc) Call(p *Pack) {
 		srf.reply.SendError(p, err)
 	}
 	defer srf.spanEnd()
-	// 最后一个请求参数是 ReadWriter
-	rwvalue := reflect.ValueOf(srf.buf)
-	params[l-1] = rwvalue
+	// 最后一个请求参数是 Reader
+	reader := reflect.ValueOf(srf.r)
+	params[l-1] = reader
 
 	results, err := srf.call(params)
 	if err != nil {
@@ -306,7 +306,7 @@ func (srf *streamReqRepFunc) Next(data [][]byte) {
 	raw := data[0]
 	var i int
 	for i < len(raw) {
-		n, err := srf.buf.Write(raw[i:])
+		n, err := srf.bufw.Write(raw[i:])
 		if err != nil {
 			srf.reply.SendError(srf.req, err)
 			return
@@ -334,7 +334,7 @@ func (srf *streamReqRepFunc) Release() error {
 
 	srf.isClosed = true
 	srf._methodFunc.Release()
-	err := srf.buf.Flush()
+	err := srf.bufw.Flush()
 	if err != nil {
 		srf.cancel()
 		return err

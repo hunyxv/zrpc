@@ -109,8 +109,8 @@ func (s *SayHello) StreamReq(ctx context.Context, count int, r io.Reader) (bool,
 func (s *SayHello) StreamRep(ctx context.Context, count int, w io.WriteCloser) error {
 	log.Printf("stream reply start ... [count: %d]", count)
 	defer w.Close()
-	writer := bufio.NewWriter(w)
-	defer writer.Flush()
+	writer := bufio.NewWriter(w) // 加上写缓存，可以减少连接中传输的数据包数量，以提高吞吐量 （客户端同理）
+	defer writer.Flush()   		 // flush
 	for i := 0; i < count; i++ {
 		fmt.Fprintf(writer, "line %d\n", i)
 		time.Sleep(time.Nanosecond * 100)

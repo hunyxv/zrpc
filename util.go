@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
-	"io"
 	"math/rand"
 	"net"
 	"os"
@@ -146,78 +144,6 @@ func (m *activeMethodFuncs) LoadAndDelete(key interface{}) (interface{}, bool) {
 
 func (m *activeMethodFuncs) Delete(key interface{}) {
 	m.LoadAndDelete(key)
-}
-
-type rwchannel struct {
-	ch        chan []byte
-	buf       []byte
-	blockSize int
-}
-
-func newRWChannel(size int) *rwchannel {
-	if size <= 0 {
-		size = 4096
-	}
-	return &rwchannel{
-		ch:        make(chan []byte, 1),
-		blockSize: size,
-	}
-}
-
-func (rw *rwchannel) Read(b []byte) (n int, err error) {
-	if len(rw.buf) > 0 {
-		if len(b) <= len(rw.buf) {
-			n = copy(b, rw.buf)
-			rw.buf = rw.buf[n:]
-			return
-		}
-
-		n = copy(b, rw.buf)
-		rw.buf = rw.buf[:0]
-	}
-
-	data, ok := <-rw.ch
-	if !ok {
-		return n, io.EOF
-	}
-	c := copy(b[n:], data)
-	n += c
-	if c < len(data) {
-		rw.buf = data[c:]
-		return
-	}
-	return
-}
-
-func (rw *rwchannel) Write(b []byte) (n int, err error) {
-	if len(b) <= rw.blockSize {
-		select {
-		case rw.ch <- b:
-		default:
-			return 0, errors.New("channle is closed")
-		}
-		return len(b), nil
-	}
-
-	for {
-		tmp := make([]byte, rw.blockSize)
-		c := copy(tmp, b)
-		b = b[c:]
-		select {
-		case rw.ch <- b:
-		default:
-			return 0, errors.New("channle is closed")
-		}
-		n += c
-		if c < rw.blockSize {
-			return
-		}
-	}
-}
-
-func (rw *rwchannel) Close() error {
-	close(rw.ch)
-	return nil
 }
 
 func getServerName() string {
