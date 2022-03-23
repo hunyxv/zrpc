@@ -257,22 +257,16 @@ func (sr *streamReqRepChannel) Call(args []reflect.Value) []reflect.Value {
 		case <-tmpCh:
 			n, err := reader.Read(buf[:])
 			if err != nil {
+				pack.Stage = zrpc.STREAM_END
+				pack.Args = nil
+				if err := sr.sender.SpecifySend(nid, pack); err != nil {
+					return sr.errResult(err)
+				}
+
 				if err != io.EOF {
-					pack.Stage = zrpc.STREAM_END
-					pack.Args = nil
-					err = sr.sender.SpecifySend(nid, pack)
-					if err != nil {
-						return sr.errResult(err)
-					}
 					return sr.errResult(err)
 				} else {
 					eof = true
-					pack.Stage = zrpc.STREAM_END
-					pack.Args = nil
-					err = sr.sender.SpecifySend(nid, pack)
-					if err != nil {
-						return sr.errResult(err)
-					}
 					break
 				}
 			}
@@ -460,7 +454,7 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 					return s.errResult(err)
 				}
 				if sendData.err != io.EOF {
-					return s.errResult(err)
+					return s.errResult(sendData.err)
 				}
 			} else {
 				err = s.sender.SpecifySend(nid, sendData.p)

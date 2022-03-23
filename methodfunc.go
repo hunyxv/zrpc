@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"reflect"
 	"sync"
 
@@ -255,11 +254,8 @@ type streamReqRepFunc struct {
 }
 
 func newStreamReqRepFunc(base *_methodFunc) (methodFunc, error) {
-	// 暂时不知道好用不好用 os.Pipe , 替代品为 rwchannel
-	readCloser, writerCloser, err := os.Pipe()
-	if err != nil {
-		return nil, err
-	}
+	readCloser, writerCloser := io.Pipe()
+
 	buf := bufio.NewReadWriter(bufio.NewReader(readCloser), bufio.NewWriter(writerCloser))
 	return &streamReqRepFunc{
 		_methodFunc: base,
@@ -483,10 +479,7 @@ type streamFunc struct {
 }
 
 func newStreamFunc(base *_methodFunc) (methodFunc, error) {
-	readCloser, writerCloser, err := os.Pipe()
-	if err != nil {
-		return nil, err
-	}
+	readCloser, writerCloser := io.Pipe()
 
 	sf := &streamFunc{
 		_methodFunc: base,

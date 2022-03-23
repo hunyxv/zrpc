@@ -128,7 +128,7 @@ func (proxy *instanceProxy) replace(v reflect.Value, t reflect.Type, index int) 
 func (proxy *instanceProxy) returnErr(err error, m method) (results []reflect.Value) {
 	err = pkgerr.WithMessage(err, "[zrpc-cli]: failed to initialize channel")
 	for _, t := range m.resultTypes[:len(m.resultTypes)-1] {
-		r := reflect.New(t)
+		r := reflect.New(t).Elem()
 		results = append(results, r)
 	}
 	results = append(results, reflect.ValueOf(err))

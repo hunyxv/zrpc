@@ -51,6 +51,8 @@ func NewSocket(id string, t zmq.Type, mode socMode, endpoint string) (*Socket, e
 	soc.SetIdentity(id)
 	soc.SetTcpKeepalive(1)       // 启用 keepalive
 	soc.SetTcpKeepaliveIdle(120) // 空闲间隔 120s
+	soc.SetSndhwm(0)             // 不限制发送高水位
+	soc.SetRcvhwm(0)             // 不限制接收高水位
 
 	if mode == Frontend {
 		if t != zmq.SUB { // zmq.sub 特别处理，前端表示接收数据，zmq.SUB 是订阅接收不用 Bind
