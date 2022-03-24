@@ -121,7 +121,6 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    go cli.Run()
     defer cli.Close()
 
     time.Sleep(100 * time.Millisecond)
