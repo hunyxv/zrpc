@@ -3,44 +3,44 @@ package zrpc
 import "log"
 
 type Logger interface {
-	Debug(args ...interface{})
-	Debugf(format string, args ...interface{})
-	Info(args ...interface{})
-	Infof(format string, args ...interface{})
-	Warn(args ...interface{})
-	Warnf(format string, args ...interface{})
-	Error(args ...interface{})
-	Errorf(format string, args ...interface{})
-	Fatal(args ...interface{})
+	Debug(args ...any)
+	Debugf(format string, args ...any)
+	Info(args ...any)
+	Infof(format string, args ...any)
+	Warn(args ...any)
+	Warnf(format string, args ...any)
+	Error(args ...any)
+	Errorf(format string, args ...any)
+	Fatal(args ...any)
 }
 
 type logger struct{}
 
-func (*logger) Debug(args ...interface{}) {
+func (*logger) Debug(args ...any) {
 	log.Println(args...)
 }
-func (*logger) Debugf(format string, args ...interface{}) {
+func (*logger) Debugf(format string, args ...any) {
 	log.Printf(format, args...)
 }
-func (*logger) Info(args ...interface{}) {
+func (*logger) Info(args ...any) {
 	log.Println(args...)
 }
-func (*logger) Infof(format string, args ...interface{}) {
+func (*logger) Infof(format string, args ...any) {
 	log.Printf(format, args...)
 }
-func (*logger) Warn(args ...interface{}) {
+func (*logger) Warn(args ...any) {
 	log.Println(args...)
 }
-func (*logger) Warnf(format string, args ...interface{}) {
+func (*logger) Warnf(format string, args ...any) {
 	log.Printf(format, args...)
 }
-func (*logger) Error(args ...interface{}) {
+func (*logger) Error(args ...any) {
 	log.Println(args...)
 }
-func (*logger) Errorf(format string, args ...interface{}) {
+func (*logger) Errorf(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
-func(*logger) Fatal(args ...interface{}) {
+func (*logger) Fatal(args ...any) {
 	log.Fatal(args...)
 }

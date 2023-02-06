@@ -2,14 +2,17 @@ package zrpc
 
 import (
 	"bytes"
+	"container/heap"
 	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"math/rand"
 	"net"
 	"os"
 	"path"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hunyxv/utils/timer"
@@ -43,7 +46,7 @@ func NewMessageID() (id string) {
 }
 
 type _Value struct {
-	v interface{}
+	v any
 	t timer.TimerTask
 }
 
@@ -60,7 +63,7 @@ func newMyMap(t *timer.HashedWheelTimer, timeout time.Duration) *myMap {
 	}
 }
 
-func (m *myMap) Store(key interface{}, value interface{}) {
+func (m *myMap) Store(key any, value any) {
 	v := &_Value{
 		v: value,
 		t: m.timer.Submit(m.timeoutPeriod, func() {
@@ -70,7 +73,7 @@ func (m *myMap) Store(key interface{}, value interface{}) {
 	m.Map.Store(key, v)
 }
 
-func (m *myMap) Load(key interface{}) (interface{}, bool) {
+func (m *myMap) Load(key any) (any, bool) {
 	v, ok := m.Map.Load(key)
 	if !ok {
 		return nil, false
@@ -80,7 +83,7 @@ func (m *myMap) Load(key interface{}) (interface{}, bool) {
 	return value.v, true
 }
 
-func (m *myMap) LoadAndDelete(key interface{}) (interface{}, bool) {
+func (m *myMap) LoadAndDelete(key any) (any, bool) {
 	v, ok := m.Map.LoadAndDelete(key)
 	if !ok {
 		return nil, false
@@ -90,7 +93,7 @@ func (m *myMap) LoadAndDelete(key interface{}) (interface{}, bool) {
 	return value.v, true
 }
 
-func (m *myMap) Delete(key interface{}) {
+func (m *myMap) Delete(key any) {
 	m.LoadAndDelete(key)
 }
 
@@ -107,7 +110,7 @@ func newActiveMethodFuncs(t *timer.HashedWheelTimer, timeout time.Duration) *act
 	}
 }
 
-func (m *activeMethodFuncs) Store(key interface{}, value interface{}) {
+func (m *activeMethodFuncs) Store(key any, value any) {
 	v := &_Value{
 		v: value,
 		t: m.timer.Submit(m.timeoutPeriod, func() {
@@ -122,7 +125,7 @@ func (m *activeMethodFuncs) Store(key interface{}, value interface{}) {
 	m.Map.Store(key, v)
 }
 
-func (m *activeMethodFuncs) Load(key interface{}) (interface{}, bool) {
+func (m *activeMethodFuncs) Load(key any) (any, bool) {
 	v, ok := m.Map.Load(key)
 	if !ok {
 		return nil, false
@@ -132,7 +135,7 @@ func (m *activeMethodFuncs) Load(key interface{}) (interface{}, bool) {
 	return value.v, true
 }
 
-func (m *activeMethodFuncs) LoadAndDelete(key interface{}) (interface{}, bool) {
+func (m *activeMethodFuncs) LoadAndDelete(key any) (any, bool) {
 	v, ok := m.Map.LoadAndDelete(key)
 	if !ok {
 		return nil, false
@@ -142,7 +145,7 @@ func (m *activeMethodFuncs) LoadAndDelete(key interface{}) (interface{}, bool) {
 	return value.v, true
 }
 
-func (m *activeMethodFuncs) Delete(key interface{}) {
+func (m *activeMethodFuncs) Delete(key any) {
 	m.LoadAndDelete(key)
 }
 
@@ -179,7 +182,7 @@ func ScanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	return 0, nil, nil
 }
 
-func isNil(i interface{}) bool {
+func isNil(i any) bool {
 	vi := reflect.ValueOf(i)
 	if vi.Kind() == reflect.Ptr {
 		return vi.IsNil()
@@ -204,4 +207,95 @@ func getLocalIps() ([]string, error) {
 		}
 	}
 	return ips, nil
+}
+
+// heapQueue 有序队列
+type HeapQueue struct {
+	cursor uint64
+	get    chan *Pack
+	queue  []*Pack
+	mutex  sync.Mutex
+	buf []byte
+}
+
+func NewHeapQueue() *HeapQueue {
+	return &HeapQueue{
+		get:   make(chan *Pack, 1),
+		queue: make([]*Pack, 0),
+	}
+}
+
+func (hq *HeapQueue) Len() int { return len(hq.queue) }
+
+func (hq *HeapQueue) Less(i, j int) bool { return hq.queue[i].SequenceID < hq.queue[j].SequenceID }
+
+func (hq *HeapQueue) Swap(i, j int) { hq.queue[i], hq.queue[j] = hq.queue[j], hq.queue[i] }
+
+func (hq *HeapQueue) Push(x any) { hq.queue = append(hq.queue, x.(*Pack)) }
+
+func (hq *HeapQueue) Pop() any {
+	l := len(hq.queue)
+	if l == 0 {
+		return nil
+	}
+
+	item := hq.queue[l-1]
+	hq.queue = hq.queue[:l-1]
+	return item
+}
+
+func (hq *HeapQueue) Insert(p *Pack) {
+	hq.mutex.Lock()
+	defer hq.mutex.Unlock()
+	if atomic.LoadUint64(&(hq.cursor)) == p.SequenceID {
+		hq.get <- p
+		return
+	}
+
+	heap.Push(hq, p)
+}
+
+func (hq *HeapQueue) Get() (*Pack, error) {
+	hq.mutex.Lock()
+	if l := len(hq.queue); l > 0 {
+		pack := hq.queue[0]
+		if pack.SequenceID == atomic.LoadUint64(&(hq.cursor)) {
+			heap.Pop(hq)
+			atomic.AddUint64(&(hq.cursor), 1)
+			hq.mutex.Unlock()
+			return pack, nil
+		}
+	}
+	hq.mutex.Unlock()
+
+	for pack := range hq.get {
+		hq.mutex.Lock()
+		atomic.AddUint64(&(hq.cursor), 1)
+		hq.mutex.Unlock()
+		return pack, nil
+	}
+
+	return nil, io.EOF
+}
+
+func (hq *HeapQueue) Release() {
+	close(hq.get)
+}
+
+
+func (hq *HeapQueue) Read(b []byte) (int, error) {
+	if len(hq.buf) > 0 {
+		n := copy(b, hq.buf)
+		hq.buf = hq.buf[n:]
+		return n, nil
+	}
+
+	pack, err := hq.Get()
+	if err != nil {
+		return 0, err
+	}
+
+	n := copy(b, pack.Args[0])
+	hq.buf = pack.Args[0][n:]
+	return n, nil
 }

@@ -4,8 +4,6 @@ go 1.18
 
 require (
 	github.com/hunyxv/zrpc v0.0.0-20220315034624-ec7d530b4a84
-	github.com/pebbe/zmq4 v1.2.8
-	github.com/vmihailenco/msgpack/v5 v5.3.5
 	go.opentelemetry.io/otel v1.5.0
 	go.opentelemetry.io/otel/exporters/jaeger v1.5.0
 	go.opentelemetry.io/otel/sdk v1.5.0
@@ -37,7 +35,9 @@ require (
 	github.com/mitchellh/mapstructure v1.1.2 // indirect
 	github.com/panjf2000/ants/v2 v2.4.7 // indirect
 	github.com/pborman/uuid v1.2.1 // indirect
+	github.com/pebbe/zmq4 v1.2.9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/vmihailenco/msgpack/v5 v5.3.5 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.2 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.2 // indirect

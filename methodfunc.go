@@ -1,15 +1,14 @@
 package zrpc
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"log"
 	"reflect"
 	"sync"
+	"sync/atomic"
 
-	"github.com/hunyxv/utils/spinlock"
 	"github.com/pkg/errors"
 	"github.com/vmihailenco/msgpack/v5"
 	"go.opentelemetry.io/otel"
@@ -27,14 +26,14 @@ var (
 type methodFunc interface {
 	FuncMode() FuncMode
 	Call(p *Pack)
-	Next(params [][]byte)
+	Next(p *Pack)
 	End(err error)
 	Release() error
 }
 
 type iReply interface {
-	Reply(p *Pack) error
-	SendError(pack *Pack, e error)
+	Reply(to string, p *Pack) error
+	SendError(to string, e error)
 }
 
 func newMethodFunc(method *method, r iReply) (methodFunc, error) {
@@ -188,14 +187,16 @@ func (f *_methodFunc) spanEnd() {
 }
 
 func (f *_methodFunc) FuncMode() FuncMode { return -1 }
-func (f *_methodFunc) Call(p *Pack)       {}
-func (f *_methodFunc) Next([][]byte)      {}
+func (f *_methodFunc) Call(*Pack)         {}
+func (f *_methodFunc) Next(*Pack)         {}
 func (f *_methodFunc) End(error)          {}
 func (f *_methodFunc) Release() error     { pool.Put(f); return nil }
 
 // ReqRepFunc 请求应答类型函数
 type reqRepFunc struct {
 	*_methodFunc
+
+	finished int32
 }
 
 func newReqRepFunc(base *_methodFunc) methodFunc {
@@ -214,29 +215,30 @@ func (f *reqRepFunc) Call(p *Pack) {
 	// 反序列化参数
 	_, params, err := f.assembleParams(p.Args)
 	if err != nil {
-		f.reply.SendError(p, err)
+		f.reply.SendError(p.Identity, err)
 	}
 	defer f.spanEnd()
 
 	results, err := f.call(params)
 	if err != nil {
-		f.reply.SendError(p, err)
+		f.reply.SendError(p.Identity, err)
 		return
 	}
 
 	resp := &Pack{
-		Identity: p.Identity,
-		Header:   p.Header,
-		Stage:    REPLY,
-		Args:     results,
+		Stage: REPLY,
+		Args:  results,
 	}
 	resp.SetMethodName(p.MethodName())
-	f.reply.Reply(resp)
+	resp.Set(MESSAGEID, p.Get(MESSAGEID))
+	f.reply.Reply(p.Identity, resp)
 }
 
 func (f *reqRepFunc) Release() error {
-	f.cancel()
-	f._methodFunc.Release()
+	if ok := atomic.CompareAndSwapInt32(&(f.finished), 0, 1); ok {
+		f.cancel()
+		f._methodFunc.Release()
+	}
 	return nil
 }
 
@@ -244,27 +246,16 @@ func (f *reqRepFunc) Release() error {
 type streamReqRepFunc struct {
 	*_methodFunc
 
-	req *Pack
-	r   io.ReadCloser
-	w   io.WriteCloser
-	bufw *bufio.Writer
-
-	isClosed bool
-	lock     sync.Locker
+	req      *Pack
+	q        *HeapQueue
+	finished int32
 }
 
 func newStreamReqRepFunc(base *_methodFunc) (methodFunc, error) {
-	readCloser, writerCloser := io.Pipe()
-
-	bufw := bufio.NewWriter(writerCloser)//bufio.NewReadWriter(bufio.NewReader(readCloser), bufio.NewWriter(writerCloser))
 	return &streamReqRepFunc{
 		_methodFunc: base,
 
-		r:   readCloser,
-		w:   writerCloser,
-		bufw: bufw,
-
-		lock: spinlock.NewSpinLock(),
+		q: NewHeapQueue(),
 	}, nil
 }
 
@@ -279,73 +270,45 @@ func (srf *streamReqRepFunc) Call(p *Pack) {
 	// 反序列化参数
 	l, params, err := srf.assembleParams(p.Args)
 	if err != nil {
-		srf.reply.SendError(p, err)
+		srf.reply.SendError(p.Identity, err)
 	}
 	defer srf.spanEnd()
 	// 最后一个请求参数是 Reader
-	reader := reflect.ValueOf(srf.r)
+	reader := reflect.ValueOf(srf.q)
 	params[l-1] = reader
 
 	results, err := srf.call(params)
 	if err != nil {
-		srf.reply.SendError(p, err)
+		srf.reply.SendError(p.Identity, err)
 		return
 	}
 
 	resp := &Pack{
-		Identity: p.Identity,
-		Header:   p.Header,
-		Stage:    REPLY,
-		Args:     results,
+		Stage: REPLY,
+		Args:  results,
 	}
 	resp.SetMethodName(p.MethodName())
-	srf.reply.Reply(resp)
+	resp.Set(MESSAGEID, p.Get(MESSAGEID))
+	srf.reply.Reply(p.Identity, resp)
 }
 
-func (srf *streamReqRepFunc) Next(data [][]byte) {
-	raw := data[0]
-	var i int
-	for i < len(raw) {
-		n, err := srf.bufw.Write(raw[i:])
-		if err != nil {
-			srf.reply.SendError(srf.req, err)
-			return
-		}
-		i += n
-	}
+func (srf *streamReqRepFunc) Next(pack *Pack) {
+	srf.q.Insert(pack)
 }
 
 func (srf *streamReqRepFunc) End(error) {
 	if err := srf.Release(); err != nil {
-		srf.reply.SendError(srf.req, err)
+		srf.reply.SendError(srf.req.Identity, err)
 	}
 }
 
 func (srf *streamReqRepFunc) Release() error {
-	if srf.isClosed {
-		return nil
-	}
-
-	srf.lock.Lock()
-	defer srf.lock.Unlock()
-	if srf.isClosed {
-		return nil
-	}
-
-	srf.isClosed = true
-	srf._methodFunc.Release()
-	err := srf.bufw.Flush()
-	if err != nil {
+	if ok := atomic.CompareAndSwapInt32(&(srf.finished), 0, 1); ok {
+		srf._methodFunc.Release()
+		srf.q.Release()
 		srf.cancel()
-		return err
 	}
-	srf.cancel()
-	return srf.w.Close()
-}
-
-type writeCloser struct {
-	*bufio.Writer
-	io.Closer
+	return nil
 }
 
 // ReqStreamRepFunc 流式响应类型函数
@@ -354,16 +317,13 @@ type reqStreamRepFunc struct {
 
 	req         *Pack
 	writeCloser io.WriteCloser
-
-	isClosed bool
-	lock     sync.Locker
+	finished    int32
+	seq         uint64
 }
 
 func newReqStreamRepFunc(base *_methodFunc) methodFunc {
 	rsf := &reqStreamRepFunc{
 		_methodFunc: base,
-
-		lock: spinlock.NewSpinLock(),
 	}
 
 	rsf.writeCloser = rsf
@@ -382,7 +342,7 @@ func (rsf *reqStreamRepFunc) Call(p *Pack) {
 	// 反序列化参数
 	l, params, err := rsf.assembleParams(p.Args)
 	if err != nil {
-		rsf.reply.SendError(p, err)
+		rsf.reply.SendError(p.Identity, err)
 	}
 	defer rsf.spanEnd()
 	// 最后一个是 WriteCloser
@@ -391,34 +351,36 @@ func (rsf *reqStreamRepFunc) Call(p *Pack) {
 
 	results, err := rsf.call(params)
 	if err != nil {
-		rsf.reply.SendError(p, err)
+		rsf.reply.SendError(p.Identity, err)
 		return
 	}
 
+	if err := rsf.writeCloser.Close(); err != nil {
+		rsf.reply.SendError(p.Identity, err)
+		return
+	}
+
+	rsf.seq++
 	resp := &Pack{
-		Identity: p.Identity,
-		Header:   p.Header,
-		Stage:    REPLY,
-		Args:     results,
+		Stage:      REPLY,
+		SequenceID: rsf.seq,
+		Args:       results,
 	}
 	resp.SetMethodName(p.MethodName())
-	rsf.reply.Reply(resp)
+	resp.Set(MESSAGEID, p.Get(MESSAGEID))
+	rsf.reply.Reply(p.Identity, resp)
 }
 
 func (rsf *reqStreamRepFunc) Write(b []byte) (int, error) {
-	var header = make(Header, len(rsf.req.Header))
-	for k, v := range rsf.req.Header {
-		for _, i := range v {
-			header.Set(k, i)
-		}
-	}
+	rsf.seq++
 	data := &Pack{
-		Identity: rsf.req.Identity,
-		Header:   header,
-		Stage:    STREAM,
-		Args:     [][]byte{b},
+		Stage:      STREAM,
+		SequenceID: rsf.seq,
+		Args:       [][]byte{b},
 	}
-	err := rsf.reply.Reply(data)
+	data.SetMethodName(rsf.req.MethodName())
+	data.Set(MESSAGEID, rsf.req.Get(MESSAGEID))
+	err := rsf.reply.Reply(rsf.req.Identity, data)
 	if err != nil {
 		return 0, err
 	}
@@ -426,35 +388,22 @@ func (rsf *reqStreamRepFunc) Write(b []byte) (int, error) {
 }
 
 func (rsf *reqStreamRepFunc) Close() error {
-	if rsf.isClosed {
-		return nil
-	}
-
-	rsf.lock.Lock()
-	defer rsf.lock.Unlock()
-	if rsf.isClosed {
-		return nil
-	}
-	rsf.isClosed = true
-
-	var header = make(Header, len(rsf.req.Header))
-	for k, v := range rsf.req.Header {
-		for _, i := range v {
-			header.Set(k, i)
-		}
-	}
+	rsf.seq++
 	data := &Pack{
-		Identity: rsf.req.Identity,
-		Header:   header,
-		Stage:    STREAM_END,
+		Stage:      STREAM_END,
+		SequenceID: rsf.seq,
+		Args:       [][]byte{{8}},
 	}
-	return rsf.reply.Reply(data)
+	data.SetMethodName(rsf.req.MethodName())
+	data.Set(MESSAGEID, rsf.req.Get(MESSAGEID))
+	return rsf.reply.Reply(rsf.req.Identity, data)
 }
 
 func (rsf *reqStreamRepFunc) Release() error {
-	rsf.Close()
-	rsf.cancel()
-	rsf._methodFunc.Release()
+	if ok := atomic.CompareAndSwapInt32(&(rsf.finished), 0, 1); ok {
+		defer rsf._methodFunc.Release()
+		rsf.cancel()
+	}
 	return nil
 }
 
@@ -467,30 +416,25 @@ type readWriteCloser struct {
 type streamFunc struct {
 	*_methodFunc
 
-	req *Pack
-
-	r  io.ReadCloser
-	w  io.WriteCloser
-	rw io.ReadWriteCloser
-
-	reqStreamIsEnd bool
-	isClose        bool
-	lock           sync.Locker
+	req         *Pack
+	queue       *HeapQueue
+	rwCloser    io.ReadWriter
+	reqfinished int32
+	repfinished int32
+	closed      int32
+	seq         uint64
 }
 
 func newStreamFunc(base *_methodFunc) (methodFunc, error) {
-	readCloser, writerCloser := io.Pipe()
-
 	sf := &streamFunc{
 		_methodFunc: base,
 
-		r:    readCloser,
-		w:    writerCloser,
-		lock: spinlock.NewSpinLock(),
+		queue: NewHeapQueue(),
 	}
-	sf.rw = &readWriteCloser{
-		Reader: bufio.NewReader(readCloser),
-		Writer: sf, // 写入需要及时发送出去
+
+	sf.rwCloser = &readWriteCloser{
+		Reader: sf.queue,
+		Writer: sf,
 		Closer: sf,
 	}
 	return sf, nil
@@ -508,44 +452,42 @@ func (sf *streamFunc) Call(p *Pack) {
 	// 反序列化参数
 	l, params, err := sf.assembleParams(p.Args)
 	if err != nil {
-		sf.reply.SendError(p, err)
+		sf.reply.SendError(p.Identity, err)
 	}
 	defer sf.spanEnd()
 
 	// 最后一个参数是 ReadWriter
-	rwvalue := reflect.ValueOf(sf.rw)
+	rwvalue := reflect.ValueOf(sf.rwCloser)
 	params[l-1] = rwvalue
 
 	results, err := sf.call(params)
 	if err != nil {
-		sf.reply.SendError(p, err)
+		sf.reply.SendError(p.Identity, err)
 		return
 	}
 
+	sf.seq++
 	resp := &Pack{
-		Identity: p.Identity,
-		Header:   p.Header,
-		Stage:    REPLY,
-		Args:     results,
+		Identity:   p.Identity,
+		Header:     p.Header,
+		Stage:      REPLY,
+		SequenceID: sf.seq,
+		Args:       results,
 	}
 	resp.SetMethodName(p.MethodName())
-	sf.reply.Reply(resp)
+	sf.reply.Reply(p.Identity, resp)
 }
 
 func (sf *streamFunc) Write(b []byte) (int, error) {
-	var header = make(Header, len(sf.req.Header))
-	for k, v := range sf.req.Header {
-		for _, i := range v {
-			header.Set(k, i)
-		}
-	}
+	sf.seq++
 	data := &Pack{
-		Identity: sf.req.Identity,
-		Header:   header,
-		Stage:    STREAM,
-		Args:     [][]byte{b},
+		Stage:      STREAM,
+		SequenceID: sf.seq,
+		Args:       [][]byte{b},
 	}
-	err := sf.reply.Reply(data)
+	data.SetMethodName(sf.req.MethodName())
+	data.Set(MESSAGEID, sf.req.Get(MESSAGEID))
+	err := sf.reply.Reply(sf.req.Identity, data)
 	if err != nil {
 		return 0, err
 	}
@@ -553,60 +495,36 @@ func (sf *streamFunc) Write(b []byte) (int, error) {
 }
 
 func (sf *streamFunc) Close() error {
-	if sf.isClose {
+	if ok := atomic.CompareAndSwapInt32(&sf.closed, 0, 1); !ok {
 		return nil
 	}
 
-	sf.lock.Lock()
-	defer sf.lock.Unlock()
-	if sf.isClose {
-		return nil
-	}
-
-	sf.isClose = true
-
-	var header = make(Header, len(sf.req.Header))
-	for k, v := range sf.req.Header {
-		for _, i := range v {
-			header.Set(k, i)
-		}
-	}
-
+	sf.seq++
 	data := &Pack{
-		Identity: sf.req.Identity,
-		Header:   header,
-		Stage:    STREAM_END,
+		SequenceID: sf.seq,
+		Stage:      STREAM_END,
 	}
-	return sf.reply.Reply(data)
+	data.SetMethodName(sf.req.MethodName())
+	data.Set(MESSAGEID, sf.req.Get(MESSAGEID))
+	return sf.reply.Reply(sf.req.Identity, data)
 }
 
-func (sf *streamFunc) Next(data [][]byte) {
-	raw := data[0]
-	var i int
-	for i < len(raw) {
-		n, err := sf.w.Write(raw[i:])
-		if err != nil && err != io.EOF {
-			sf.reply.SendError(sf.req, err)
-			return
-		}
-		i += n
-	}
+func (sf *streamFunc) Next(pack *Pack) {
+	sf.queue.Insert(pack)
 }
 
 // End 	请求流结束
 func (sf *streamFunc) End(error) {
-	sf.lock.Lock()
-	defer sf.lock.Unlock()
-	if sf.reqStreamIsEnd {
-		return
+	if ok := atomic.CompareAndSwapInt32(&(sf.repfinished), 0, 1); ok {
+		sf.queue.Release()
 	}
-
-	sf.reqStreamIsEnd = true
-	sf.w.Close()
 }
 
 func (sf *streamFunc) Release() error {
-	defer sf._methodFunc.Release()
-	sf.End(nil)
-	return sf.Close()
+	if ok := atomic.CompareAndSwapInt32(&sf.reqfinished, 0, 1); ok {
+		sf.End(nil)
+		defer sf._methodFunc.Release()
+		return sf.Close()
+	}
+	return nil
 }

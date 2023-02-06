@@ -2,6 +2,7 @@ package zrpc
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -10,6 +11,7 @@ const (
 	PACKPATH    = "__pack_path__"   // pack 在集群中传播路径
 	TTL         = "__ttl__"         // pack 在集群中传播跳数
 	BLOCKSIZE   = "__block_size__"  // stream 请求中块大小
+	SEQUENCE_ID = "__seq_id__"      // stream 请求分块序列号
 	METHOD_NAME = "__method_name__" // 方法名称
 	MESSAGEID   = "__msg_id__"      // 消息id
 )
@@ -50,10 +52,11 @@ func (h Header) Has(key string) bool {
 }
 
 type Pack struct {
-	Identity string   `msgpack:"identity"`
-	Stage    string   `msgpack:"method"`
-	Header   Header   `msgpack:"head"`
-	Args     [][]byte `msgpack:"args"`
+	Identity   string   `msgpack:"identity"`
+	Stage      string   `msgpack:"method"`
+	SequenceID uint64   `msgpack:"seq_id,omitempty"`
+	Header     Header   `msgpack:"head"`
+	Args       [][]byte `msgpack:"args"`
 }
 
 func (p *Pack) Set(key, value string) {
@@ -70,6 +73,15 @@ func (p *Pack) Get(key string) string {
 	return p.Header.Get(key)
 }
 
+func (p *Pack) TTL() int {
+	strttl := p.Header.Get(TTL)
+	if strttl == "" {
+		return 0
+	}
+	ttl, _ := strconv.Atoi(strttl)
+	return ttl
+}
+
 func (p *Pack) SetMethodName(method string) {
 	p.Set(METHOD_NAME, method)
 }
@@ -84,15 +96,17 @@ func (p *Pack) MarshalMsgpack() (pack []byte, err error) {
 	}
 
 	pack, err = msgpack.Marshal(struct {
-		Identity string   `msgpack:"identity"`
-		Stage    string   `msgpack:"method"`
-		Header   Header   `msgpack:"head"`
-		Args     [][]byte `msgpack:"args"`
+		Identity   string   `msgpack:"identity"`
+		Stage      string   `msgpack:"method"`
+		SequenceID uint64   `msgpack:"seq_id,omitempty"`
+		Header     Header   `msgpack:"head"`
+		Args       [][]byte `msgpack:"args"`
 	}{
-		Identity: p.Identity,
-		Stage:    p.Stage,
-		Header:   p.Header,
-		Args:     p.Args,
+		Identity:   p.Identity,
+		Stage:      p.Stage,
+		SequenceID: p.SequenceID,
+		Header:     p.Header,
+		Args:       p.Args,
 	})
 	return
 }

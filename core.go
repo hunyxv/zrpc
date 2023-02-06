@@ -36,6 +36,20 @@ const (
 	Stream
 )
 
+func (fm FuncMode) String() string {
+	switch fm {
+	case ReqRep:
+		return "ReqRep"
+	case StreamReqRep:
+		return "StreamReqRep"
+	case ReqStreamRep:
+		return "ReqStreamRep"
+	case Stream:
+		return "Stream"
+	}
+	return ""
+}
+
 type method struct {
 	methodName  string
 	mode        FuncMode
@@ -64,14 +78,13 @@ func NewRPCInstance() *RPCInstance {
 }
 
 // RegisterServer 注册 server
-func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventions interface{}) error {
+func (rpc *RPCInstance) RegisterServer(name string, server any, conventions any) error {
 	rv := reflect.ValueOf(server)
 	if rv.IsNil() {
 		return ErrInvalidServer
 	}
 
 	t := reflect.TypeOf(server)
-
 	if !t.Implements(reflect.TypeOf(conventions).Elem()) {
 		return ErrNotImplements
 	}
@@ -108,8 +121,8 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 		if !method.paramTypes[0].Implements(ctxType) {
 			return ErrInvalidParamType
 		}
-		var mode FuncMode = ReqRep
 
+		var mode FuncMode = ReqRep
 		// 参数大于1
 		if numOfParams > 1 {
 			// 最后一个参数实现了 io.Reader
@@ -122,6 +135,7 @@ func (rpc *RPCInstance) RegisterServer(name string, server interface{}, conventi
 			}
 		}
 		method.mode = mode
+
 		for j := 0; j < numOfResult; j++ {
 			method.resultTypes = append(method.resultTypes, methodType.Out(j))
 		}

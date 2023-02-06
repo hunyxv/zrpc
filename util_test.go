@@ -3,6 +3,8 @@ package zrpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -65,4 +67,92 @@ func TestGetMarshalNode(t *testing.T) {
 	var node2 Node
 	err = json.Unmarshal(data, &node2)
 	t.Log(node2)
+}
+
+func TestHeapQueue(t *testing.T) {
+	queue := NewHeapQueue()
+	go func() {
+		queue.Insert(&Pack{
+			SequenceID: 2,
+			Args:       [][]byte{{1}},
+		})
+		time.Sleep(100 * time.Millisecond)
+		queue.Insert(&Pack{
+			SequenceID: 1,
+			Args:       [][]byte{{2}},
+		})
+		time.Sleep(200 * time.Millisecond)
+		queue.Insert(&Pack{
+			SequenceID: 3,
+			Args:       [][]byte{{3}},
+		})
+		time.Sleep(300 * time.Millisecond)
+		queue.Insert(&Pack{
+			SequenceID: 5,
+			Args:       [][]byte{{4}},
+		})
+		queue.Insert(&Pack{
+			SequenceID: 0,
+			Args:       [][]byte{{6}},
+		})
+		queue.Release()
+		queue.Insert(&Pack{
+			SequenceID: 4,
+			Args:       [][]byte{{5}},
+		})
+	}()
+
+	for {
+		b, err := queue.Get()
+		if err != nil {
+			if err == io.EOF {
+				t.Log(err)
+				break
+			}
+			t.Fatal(err)
+		}
+		t.Log(b)
+	}
+}
+
+func TestHQReader(t *testing.T) {
+	queue := NewHeapQueue()
+	go func() {
+		queue.Insert(&Pack{
+			SequenceID: 2,
+			Args:       [][]byte{{1,1,1,1,1,1,1,1,1,1}},
+		})
+		time.Sleep(100 * time.Millisecond)
+		queue.Insert(&Pack{
+			SequenceID: 1,
+			Args:       [][]byte{{2,2,2,2,2,2,2,2,2,2}},
+		})
+		time.Sleep(200 * time.Millisecond)
+		queue.Insert(&Pack{
+			SequenceID: 3,
+			Args:       [][]byte{{3,3,3,3,3,3,3,3,3,3}},
+		})
+		time.Sleep(300 * time.Millisecond)
+		queue.Insert(&Pack{
+			SequenceID: 5,
+			Args:       [][]byte{{4,4,4,4,4,4,4,4,4,4}},
+		})
+		queue.Insert(&Pack{
+			SequenceID: 0,
+			Args:       [][]byte{{6,6,6,6,6,6,6,6,6,6}},
+		})
+		queue.Release()
+		queue.Insert(&Pack{
+			SequenceID: 4,
+			Args:       [][]byte{{5,5,5,5,5,5,5}},
+		})
+	}()
+	io.Pipe()
+	b := make([]byte, 11)
+	var n int 
+	var err error
+	for n, err = queue.Read(b); err == nil; n, err = queue.Read(b) {
+		fmt.Println(b[:n])
+	}
+	t.Log(err)
 }

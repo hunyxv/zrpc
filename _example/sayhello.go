@@ -108,9 +108,8 @@ func (s *SayHello) StreamReq(ctx context.Context, count int, r io.Reader) (bool,
 
 func (s *SayHello) StreamRep(ctx context.Context, count int, w io.WriteCloser) error {
 	log.Printf("stream reply start ... [count: %d]", count)
-	defer w.Close()
 	writer := bufio.NewWriter(w) // 加上写缓存，可以减少连接中传输的数据包数量，以提高吞吐量 （客户端同理）
-	defer writer.Flush()   		 // flush
+	defer writer.Flush()         // flush
 	for i := 0; i < count; i++ {
 		fmt.Fprintf(writer, "line %d\n", i)
 		time.Sleep(time.Nanosecond * 100)
@@ -125,13 +124,12 @@ type RequestRespone struct {
 
 func (s *SayHello) Stream(ctx context.Context, count int, rw io.ReadWriteCloser) error {
 	log.Printf("stream start ... [count: %d]", count)
-	ch := make(chan int, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		reader := bufio.NewReader(rw)
-		for {
+		for i := 0; i < count; i++ {
 			data, _, err := reader.ReadLine()
 			if err != nil {
 				if err == io.EOF {
@@ -143,54 +141,28 @@ func (s *SayHello) Stream(ctx context.Context, count int, rw io.ReadWriteCloser)
 			var resp RequestRespone
 			json.Unmarshal(data, &resp)
 			log.Printf("recv: %+v", resp)
-			ch <- resp.Index
 		}
-		close(ch)
 	}()
 
 	writer := bufio.NewWriter(rw)
-	store := map[int]bool{}
-Loop:
-	for i := 0; i < count; i += 5 {
-		for j := i; j < i+5; j++ {
-			store[j] = false
-			req := RequestRespone{
-				Index: j,
-			}
-			log.Printf("send: %v", req)
-			raw, _ := json.Marshal(req)
-			for k := 0; k < len(raw); {
-				n, err := writer.Write(raw[k:])
-				if err != nil {
-					return err
-				}
-				k += n
-			}
-			writer.WriteByte('\n')
+	for i := 0; i < count; i++ {
+		req := RequestRespone{
+			Index: i,
 		}
+		log.Printf("send: %v", req)
+		raw, _ := json.Marshal(req)
+		_, err := writer.Write(raw)
+		if err != nil {
+			return err
+		}
+
+		writer.WriteByte('\n')
 		writer.Flush()
-
-		for {
-			i, ok := <-ch
-			if !ok {
-				break Loop
-			}
-			store[i] = true
-			allTrue := true
-			for _, v := range store {
-				if !v {
-					allTrue = false
-				}
-			}
-			if allTrue {
-				break
-			}
-		}
 	}
-
-	log.Println("rw closed")
+	writer.Flush()
 	rw.Close()
 	wg.Wait()
+	log.Println("rw closed")
 	log.Println("stream stop ...")
 	return nil
 }

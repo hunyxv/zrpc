@@ -392,7 +392,7 @@ func (manager *connectManager) Delete(nodeid string) {
 		delete(manager.servicesMap, nodeid)
 	}
 	for i, node := range manager.services {
-		if node.NodeID == node.NodeID {
+		if node.NodeID == nodeid {
 			manager.services[i] = manager.services[len(manager.services)-1]
 			manager.services = manager.services[:len(manager.services)-1]
 			break

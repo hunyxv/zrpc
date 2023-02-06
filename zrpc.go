@@ -34,7 +34,7 @@ func init() {
 }
 
 // RegisterServer 注册服务
-func RegisterServer(name string, server interface{}, conventions interface{}) error {
+func RegisterServer(name string, server any, conventions any) error {
 	if defaultRPCInstance == nil {
 		defaultRPCInstance = NewRPCInstance()
 	}
@@ -63,7 +63,11 @@ func Run(opts ...Option) error {
 		defaultRPCInstance = NewRPCInstance()
 	}
 
-	svcMultiplexer = NewSvcMultiplexer(defaultRPCInstance, opts...)
+	var err error
+	svcMultiplexer, err = NewSvcMultiplexer(defaultRPCInstance, opts...)
+	if err != nil {
+		return err
+	}
 	svcMultiplexer.Run()
 	return nil
 }

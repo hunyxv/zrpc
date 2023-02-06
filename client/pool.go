@@ -15,7 +15,7 @@ var (
 )
 
 var timers = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		t := time.NewTimer(time.Hour)
 		t.Stop()
 		return t
@@ -181,7 +181,7 @@ func (pool *CliPool) addNewCliWithLock(breaks bool) (*_cli, error) {
 }
 
 // Decorator 将 server proxy 装饰为可调用 server
-func (pool *CliPool) Decorator(name string, i interface{}, retry int) error {
+func (pool *CliPool) Decorator(name string, i any, retry int) error {
 	if pool.isClosed() {
 		return ErrClosed
 	}
@@ -202,7 +202,7 @@ func (pool *CliPool) Decorator(name string, i interface{}, retry int) error {
 }
 
 // GetSerivce 获取已注册 rpc 服务实例以供使用
-func (pool *CliPool) GetSerivce(name string) (interface{}, bool) {
+func (pool *CliPool) GetSerivce(name string) (any, bool) {
 	if pool.isClosed() {
 		return nil, false
 	}

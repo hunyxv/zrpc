@@ -6,7 +6,8 @@ import (
 	"errors"
 	"log"
 	"math/rand"
-	"strconv"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/hunyxv/utils/timer"
@@ -18,17 +19,18 @@ var _ iReply = (*SvcMultiplexer)(nil)
 
 type SvcMultiplexer struct {
 	logger         Logger
-	activeChannels *activeMethodFuncs
+	activeChannels sync.Map
 	nodeState      *NodeState
 	broker         Broker
 	rpc            *RPCInstance
 	timer          *timer.HashedWheelTimer
-	forward        *myMap
+	forward        sync.Map
 	opts           *options
+	mpool          *ants.Pool
 	c              chan int
 }
 
-func NewSvcMultiplexer(rpc *RPCInstance, opts ...Option) *SvcMultiplexer {
+func NewSvcMultiplexer(rpc *RPCInstance, opts ...Option) (*SvcMultiplexer, error) {
 	defOpts := &options{
 		MaxTimeoutPeriod:  5 * time.Minute,
 		Logger:            &logger{},
@@ -43,25 +45,28 @@ func NewSvcMultiplexer(rpc *RPCInstance, opts ...Option) *SvcMultiplexer {
 	nodeState := &NodeState{Node: &defOpts.Node}
 	broker, err := NewBroker(nodeState, 5*time.Second, defOpts.Logger)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	t, err := timer.NewHashedWheelTimer(context.Background(), timer.WithWorkPool(goroutinePool))
 	if err != nil {
-		panic(err)
+		return nil, err
+	}
+	pool, err := ants.NewPool(runtime.NumCPU())
+	if err != nil {
+		return nil, err
 	}
 	mux := &SvcMultiplexer{
-		logger:         defOpts.Logger,
-		activeChannels: newActiveMethodFuncs(t, defOpts.MaxTimeoutPeriod),
-		nodeState:      nodeState,
-		broker:         broker,
-		rpc:            rpc,
-		timer:          t,
-		forward:        newMyMap(t, defOpts.MaxTimeoutPeriod),
-		opts:           defOpts,
-		c:              make(chan int),
+		logger:    defOpts.Logger,
+		nodeState: nodeState,
+		broker:    broker,
+		rpc:       rpc,
+		timer:     t,
+		opts:      defOpts,
+		mpool:     pool,
+		c:         make(chan int),
 	}
-	return mux
+	return mux, nil
 }
 
 // AddPeerNode 用于测试，后面删掉
@@ -69,31 +74,29 @@ func (m *SvcMultiplexer) AddPeerNode(n *Node) {
 	m.broker.AddPeerNode(n)
 }
 
-func (m *SvcMultiplexer) Reply(p *Pack) error {
+func (m *SvcMultiplexer) Reply(to string, p *Pack) error {
 	switch p.Stage {
 	case REPLY, ERROR: // 只要应答（无论有无发生异常），方法的生命周期都应该算是结束了
 		msgid := p.Get(MESSAGEID)
 		m.activeChannels.Delete(msgid)
 		m.forward.Delete(msgid)
-		return m.broker.Reply(p)
+		return m.broker.Reply(to, p)
 	case STREAM: // 流式响应
-		return m.broker.Reply(p)
+		return m.broker.Reply(to, p)
 	case STREAM_END: // 流式响应结束
-		return m.broker.Reply(p)
+		return m.broker.Reply(to, p)
 	}
 	return nil
 }
 
-func (m *SvcMultiplexer) SendError(pack *Pack, e error) {
+func (m *SvcMultiplexer) SendError(to string, e error) {
 	errRaw, _ := msgpack.Marshal(e.Error())
 	errp := &Pack{
-		Identity: pack.Identity,
-		Header:   pack.Header,
-		Stage:    ERROR,
-		Args:     [][]byte{errRaw},
+		Stage: ERROR,
+		Args:  [][]byte{errRaw},
 	}
 	// errp.SetMethodName(pack.MethodName())
-	if err := m.Reply(errp); err != nil {
+	if err := m.Reply(to, errp); err != nil {
 		log.Printf("reply message fail: %v", err)
 	}
 }
@@ -108,25 +111,22 @@ func (m *SvcMultiplexer) submitTask(f func()) error {
 func (m *SvcMultiplexer) do(msgid string, pack *Pack) (err error) {
 	mf, err := m.rpc.GenerateExecFunc(pack.MethodName(), m)
 	if err != nil {
+		m.logger.Errorf("SvcMultiplexer|rpc.GenerateExecFunc|Fail|%s", err)
 		return err
 	}
 
 	if mf.FuncMode() == ReqRep {
-		return m.submitTask(func() {
-			mf.Call(pack)
-		})
+		mf.Call(pack)
+		return
 	}
 
 	defer func() {
-		if err != nil {
-			m.activeChannels.Delete(msgid)
-		}
+		m.activeChannels.Delete(msgid)
 	}()
 
 	m.activeChannels.Store(msgid, mf)
-	return m.submitTask(func() {
-		mf.Call(pack)
-	})
+	mf.Call(pack)
+	return nil
 }
 
 func (m *SvcMultiplexer) dispatcher() {
@@ -135,96 +135,94 @@ func (m *SvcMultiplexer) dispatcher() {
 		case <-m.c:
 			return
 		case pack := <-m.broker.NewTask():
-			msgid := pack.Get(MESSAGEID)
-			if msgid == "" {
-				m.SendError(pack, ErrNoMessageID)
-				continue
-			}
-			switch pack.Stage {
-			case REQUEST: // 请求
-				//var fromPeerNode bool
-				ttlStr := pack.Header.Get(TTL)
-				if ttlStr != "" && ttlStr != "0" {
-					ttl, _ := strconv.Atoi(ttlStr)
-					if ttl > m.opts.PackTTL { // 超过了最大生存时间
+			m.mpool.Submit(func() {
+				msgid := pack.Get(MESSAGEID)
+				if msgid == "" {
+					m.SendError(pack.Identity, ErrNoMessageID)
+					return
+				}
+
+				switch pack.Stage {
+				case REQUEST: // 请求
+					//var fromPeerNode bool
+
+					if ttl := pack.TTL(); ttl > m.opts.PackTTL { // 超过了最大生存时间
 						m.logger.Warnf("SvcMultiplexer: packet exceeds maximum ttl, %d", ttl)
-						m.SendError(pack, ErrSubmitTimeout)
-						continue
+						m.SendError(pack.Identity, ErrSubmitTimeout)
+						return
 					}
-					//fromPeerNode = true
-				}
-				isIdle, ok := m.nodeState.isIdle()
-				if ok {
-					// 同步节点状态
-					go func() { m.broker.PublishNodeState() }()
-				}
 
-				// 本节点空闲
-				if isIdle {
-					err := m.do(msgid, pack)
-					if err == nil {
-						continue
-					} else if errors.Is(err, ants.ErrPoolOverload) {
-						// 工作池满载了
+					isIdle, ok := m.nodeState.isIdle()
+					if ok {
+						// 同步节点状态
+						m.broker.PublishNodeState()
+					}
+
+					// 本节点空闲
+					if isIdle {
+						err := m.submitTask(func() { m.do(msgid, pack) })
+						if err == nil {
+							return
+						} else if errors.Is(err, ants.ErrPoolOverload) {
+							// 工作池满载了
+							m.logger.Warnf("SvcMultiplexer: %v", err)
+							m.SendError(pack.Identity, ErrSubmitTimeout)
+							return
+						} else { // 其他异常
+							m.logger.Errorf("SvcMultiplexer: %v", err)
+							m.SendError(pack.Identity, err)
+							return
+						}
+					}
+
+					// 转发给其他节点
+					n, err := m.SelectPeerNode()
+					if err != nil {
+						// 找不到其他空闲节点,就本节点处理
 						m.logger.Warnf("SvcMultiplexer: %v", err)
-						m.SendError(pack, ErrSubmitTimeout)
-						continue
-					} else { // 其他异常
-						m.logger.Errorf("SvcMultiplexer: %v", err)
-						m.SendError(pack, err)
-						continue
+						if err := m.do(msgid, pack); err != nil {
+							// 本地无法处理报错
+							m.logger.Errorf("SvcMultiplexer: %v", err)
+							m.SendError(pack.Identity, ErrSubmitTimeout)
+						}
+						return
 					}
-				}
-
-				// 转发给其他节点
-				n, err := m.SelectPeerNode()
-				if err != nil {
-					// 找不到其他空闲节点,就本节点处理
-					m.logger.Warnf("SvcMultiplexer: %v", err)
-					if err := m.do(msgid, pack); err != nil {
-						// 本地无法处理报错
-						m.logger.Errorf("SvcMultiplexer: %v", err)
-						m.SendError(pack, ErrSubmitTimeout)
+					m.broker.ForwardToPeerNode(n.NodeID, pack) // 转发
+					m.forward.Store(msgid, n.NodeID)           // 保存消息和节点对应关系
+				case STREAM: // 流式请求中
+					mf, ok := m.activeChannels.Load(msgid)
+					if ok {
+						if methodFunc, ok := mf.(methodFunc); ok {
+							methodFunc.Next(pack)
+						}
+					} else {
+						value, ok := m.forward.Load(msgid)
+						if !ok {
+							// 无处理节点，丢弃
+							m.logger.Warnf("task processing node not found")
+							return
+						}
+						nodeid := value.(string)
+						m.broker.ForwardToPeerNode(nodeid, pack)
 					}
-					continue
-				}
-				m.broker.ForwardToPeerNode(n.NodeID, pack) // 转发
-				m.forward.Store(msgid, n.NodeID)           // 保存消息和节点对应关系
-			case STREAM: // 流式请求中
-				mf, ok := m.activeChannels.Load(msgid)
-				if ok {
-					if methodFunc, ok := mf.(methodFunc); ok {
-						methodFunc.Next(pack.Args)
-					}
-				} else {
-					value, ok := m.forward.Load(msgid)
-					if !ok {
-						// 无处理节点，丢弃
-						m.logger.Warnf("task processing node not found")
-						continue
-					}
-					nodeid := value.(string)
-					m.broker.ForwardToPeerNode(nodeid, pack)
-				}
-			case STREAM_END: // 流式请求结束
-				mf, ok := m.activeChannels.LoadAndDelete(msgid)
-				if ok {
-					m.submitTask(func() {
+				case STREAM_END: // 流式请求结束
+					mf, ok := m.activeChannels.LoadAndDelete(msgid)
+					if ok {
 						if methodFunc, ok := mf.(methodFunc); ok {
 							methodFunc.End(nil)
 						}
-					})
-				} else {
-					value, ok := m.forward.Load(msgid)
-					if !ok {
-						// 无处理节点，丢弃
-						m.logger.Warnf("stage %s: task processing node not found", STREAM_END)
-						continue
+					} else {
+						value, ok := m.forward.Load(msgid)
+						if !ok {
+							// 无处理节点，丢弃
+							m.logger.Warnf("stage %s: task processing node not found", STREAM_END)
+							return
+						}
+						nodeid := value.(string)
+						m.broker.ForwardToPeerNode(nodeid, pack)
 					}
-					nodeid := value.(string)
-					m.broker.ForwardToPeerNode(nodeid, pack)
 				}
-			}
+			})
 		}
 	}
 }

@@ -8,7 +8,7 @@ require (
 	github.com/hunyxv/utils v0.0.0-20220221134715-bf42549b7954
 	github.com/panjf2000/ants/v2 v2.4.7
 	github.com/pborman/uuid v1.2.1
-	github.com/pebbe/zmq4 v1.2.7
+	github.com/pebbe/zmq4 v1.2.9
 	github.com/pkg/errors v0.9.1
 	github.com/vmihailenco/msgpack/v5 v5.3.5
 	go.etcd.io/etcd/client/v3 v3.5.2

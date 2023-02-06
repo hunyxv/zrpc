@@ -17,10 +17,10 @@ var (
 	ErrInvalidParamType  = errors.New("zrpc-cli: the first param must be Context")
 	ErrInvalidResultType = errors.New("zrpc-cli: the last return value must be error")
 
-	errType         = reflect.TypeOf(new(error)).Elem()
-	ctxType         = reflect.TypeOf(new(context.Context)).Elem()
-	readType        = reflect.TypeOf(new(io.Reader)).Elem()
-	writeCloserType = reflect.TypeOf(new(io.WriteCloser)).Elem()
+	errType    = reflect.TypeOf(new(error)).Elem()
+	ctxType    = reflect.TypeOf(new(context.Context)).Elem()
+	readType   = reflect.TypeOf(new(io.Reader)).Elem()
+	writerType = reflect.TypeOf(new(io.Writer)).Elem()
 )
 
 type cliPool interface {
@@ -36,13 +36,13 @@ type method struct {
 }
 
 type instanceProxy struct {
-	InstanceName string      // 实例名称
-	instance     interface{} // 实例
+	InstanceName string // 实例名称
+	instance     any    // 实例
 
 	cliPool cliPool
 }
 
-func newInstanceProxy(instanceName string, instance interface{}, p cliPool) *instanceProxy {
+func newInstanceProxy(instanceName string, instance any, p cliPool) *instanceProxy {
 	return &instanceProxy{
 		InstanceName: instanceName,
 		instance:     instance,
@@ -95,7 +95,7 @@ func (proxy *instanceProxy) replace(v reflect.Value, t reflect.Type, index int) 
 				mode |= zrpc.StreamReqRep
 			}
 			// 最后一个参数实现了 io.Writer
-			if methodType.In(numOfParams - 1).Implements(writeCloserType) {
+			if methodType.In(numOfParams - 1).Implements(writerType) {
 				mode |= zrpc.ReqStreamRep
 			}
 		}

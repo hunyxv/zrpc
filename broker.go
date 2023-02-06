@@ -62,7 +62,7 @@ type Broker interface {
 	// NewTask 获得新任务
 	NewTask() <-chan *Pack
 	// Reply 回复结果
-	Reply(p *Pack) error
+	Reply(to string, p *Pack) error
 	// SetBrokerMode 设置 broker 运行模式
 	SetBrokerMode(m mode)
 	// PublishNodeState 发布本节点状态
@@ -123,10 +123,9 @@ func (b *broker) NewTask() <-chan *Pack {
 }
 
 // Reply 回复执行结果
-func (b *broker) Reply(p *Pack) error {
+func (b *broker) Reply(to string, p *Pack) error {
 	lastNode := p.Header.Pop(PACKPATH)
 	if lastNode == "" {
-		to := p.Identity
 		p.Identity = b.state.NodeID
 		raw, _ := msgpack.Marshal(p)
 		b.localfe.Send() <- [][]byte{[]byte(to), raw}

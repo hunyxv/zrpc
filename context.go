@@ -41,7 +41,7 @@ func (ctx *Context) Cancel() {
 }
 
 func (ctx *Context) MarshalMsgpack() ([]byte, error) {
-	payload := make(map[zrpcContextKey]interface{}, 2)
+	payload := make(map[zrpcContextKey]any, 2)
 	tracePayload := map[string]string{}
 	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(tracePayload))
 	if len(tracePayload) != 0 {
@@ -63,7 +63,7 @@ func (ctx *Context) UnmarshalMsgpack(b []byte) error {
 	}
 
 	if len(b) > 0 {
-		var m map[zrpcContextKey]interface{}
+		var m map[zrpcContextKey]any
 		if err := msgpack.Unmarshal(b, &m); err != nil {
 			return err
 		}

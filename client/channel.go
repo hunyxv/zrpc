@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -379,6 +380,7 @@ type streamChannel struct {
 
 	ch     chan *zrpc.Pack
 	sendCh chan *sendItem
+	seq    uint64
 }
 
 func newStreamChannel(base *_methodChannel) *streamChannel {
@@ -386,7 +388,7 @@ func newStreamChannel(base *_methodChannel) *streamChannel {
 		_methodChannel: base,
 
 		ch:     make(chan *zrpc.Pack, 1),
-		sendCh: make(chan *sendItem),
+		sendCh: make(chan *sendItem, 1),
 	}
 }
 
@@ -402,6 +404,8 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 			"cannot use '%s' as io.ReadWriteCloser value in argument to %s",
 			args[len(args)-1].Type().Kind(), s.method.methodName))
 	}
+	readbuf := bufio.NewReader(readWriterCloser)
+	writebuf := bufio.NewWriter(readWriterCloser)
 
 	ctx, params, err := s.marshalParams(args)
 	if err != nil {
@@ -409,8 +413,9 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 	}
 
 	pack := &zrpc.Pack{
-		Stage: zrpc.REQUEST,
-		Args:  params,
+		SequenceID: s.seq,
+		Stage:      zrpc.REQUEST,
+		Args:       params,
 	}
 	pack.Set(zrpc.MESSAGEID, s.MsgID())
 	pack.SetMethodName(s.method.methodName)
@@ -419,7 +424,7 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 		return s.errResult(err)
 	}
 
-	go s.read(ctx, readWriterCloser)
+	go s.read(ctx, readbuf)
 	for {
 		select {
 		case <-ctx.Done():
@@ -438,13 +443,14 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 				data := retPack.Args[0]
 				var count = 0
 				for count < len(data) {
-					n, err := readWriterCloser.Write(data[count:])
+					n, err := writebuf.Write(data[count:])
 					if err != nil {
 						return s.errResult(err)
 					}
 					count += n
 				}
 			case zrpc.STREAM_END:
+				writebuf.Flush()
 				readWriterCloser.Close()
 			case zrpc.REPLY:
 				results, err := s.unmarshalResult(retPack.Args)
@@ -456,6 +462,7 @@ func (s *streamChannel) Call(args []reflect.Value) []reflect.Value {
 		case sendData := <-s.sendCh:
 			if sendData.err != nil {
 				pack.Stage = zrpc.STREAM_END
+				pack.SequenceID = s.seq + 1
 				if sendData.err != io.EOF {
 					pack.Args = [][]byte{[]byte(sendData.err.Error())}
 					s.sender.SpecifySend(nid, pack)
@@ -489,9 +496,11 @@ func (s *streamChannel) read(ctx context.Context, r io.Reader) {
 
 			tmp := make([]byte, n)
 			copy(tmp, buf[:n])
+			s.seq++
 			pack := &zrpc.Pack{
-				Stage: zrpc.STREAM,
-				Args:  [][]byte{tmp},
+				SequenceID: s.seq,
+				Stage:      zrpc.STREAM,
+				Args:       [][]byte{tmp},
 			}
 			pack.Set(zrpc.MESSAGEID, s.MsgID())
 			pack.SetMethodName(s.method.methodName)

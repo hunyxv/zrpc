@@ -63,7 +63,7 @@ func NewDirectClient(server ServerInfo) (*ZrpcClient, error) {
 				msgid := p.Get(zrpc.MESSAGEID)
 				ch, ok := chs.Load(msgid)
 				if !ok {
-					log.Printf("[zrpc-cli]: returned result cannot find consumer")
+					log.Printf("[zrpc-cli]: returned result cannot find consumer, %s, %+v", msgid, p)
 					continue
 				}
 
@@ -106,7 +106,7 @@ func NewClient(discover zrpc.ServiceDiscover) (*ZrpcClient, error) {
 				msgid := p.Get(zrpc.MESSAGEID)
 				ch, ok := chs.Load(msgid)
 				if !ok {
-					log.Printf("[zrpc-cli]: returned result cannot find consumer")
+					log.Printf("[zrpc-cli]: returned result cannot find consumer, %s", msgid)
 					continue
 				}
 
@@ -132,7 +132,7 @@ func (cli *ZrpcClient) isClosed() bool {
 }
 
 // Decorator 将 server proxy 装饰为可调用 server
-func (cli *ZrpcClient) Decorator(name string, i interface{}, retry int) error {
+func (cli *ZrpcClient) Decorator(name string, i any, retry int) error {
 	if cli.isClosed() {
 		return ErrClosed
 	}
@@ -162,7 +162,7 @@ func (cli *ZrpcClient) get(context.Context) (client, error) {
 func (cli *ZrpcClient) put(client) {}
 
 // GetSerivce 获取已注册 rpc 服务实例以供使用
-func (cli *ZrpcClient) GetSerivce(name string) (interface{}, bool) {
+func (cli *ZrpcClient) GetSerivce(name string) (any, bool) {
 	if cli.isClosed() {
 		return nil, false
 	}
