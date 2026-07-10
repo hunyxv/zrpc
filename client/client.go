@@ -3,220 +3,87 @@ package client
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log"
-	"sync"
 
 	"github.com/hunyxv/zrpc"
-	"github.com/pborman/uuid"
+	"github.com/hunyxv/zrpc/balancer"
+	"github.com/hunyxv/zrpc/protocol"
+	"github.com/hunyxv/zrpc/resolver"
+	"github.com/hunyxv/zrpc/status"
+	"github.com/hunyxv/zrpc/transport"
 )
 
-var (
-	// ErrClosed client is closed
-	ErrClosed = errors.New("zrpc-cli: client is closed")
-)
-
-type client interface {
-	packSender
-	insertNewChannel(methodName string, ch methodChannel)
-	removeChannel(methodName string, msgid string)
+type Client struct {
+	opts Options
+	conn transport.Conn
 }
 
-var _ client = (*ZrpcClient)(nil)
-
-type ZrpcClient struct {
-	identity         string
-	zconn            zConnecter
-	channels         map[string]*sync.Map
-	serviceDiscovery zrpc.ServiceDiscover
-	services         sync.Map
-	mutex            sync.RWMutex
-	_closed          chan struct{}
-}
-
-// NewDirectClient 根据 rpc 服务地址连接的客户端（只适用于单节点服务）
-func NewDirectClient(server ServerInfo) (*ZrpcClient, error) {
-	identity := "cli-" + uuid.NewRandom().String()
-	conn, err := newDirectConnect(identity, server)
+func New(opts Options) (*Client, error) {
+	if opts.Transport == nil {
+		return nil, errors.New("zrpc/client: transport is required")
+	}
+	if opts.Codec == nil {
+		return nil, errors.New("zrpc/client: codec is required")
+	}
+	r := opts.Resolver
+	if r == nil {
+		r = resolver.Static(opts.Target)
+	}
+	b := opts.Balancer
+	if b == nil {
+		b = balancer.PickFirst()
+	}
+	ctx := context.Background()
+	endpoints, err := r.Resolve(ctx, opts.Target.Address)
 	if err != nil {
 		return nil, err
 	}
-	client := &ZrpcClient{
-		identity: identity,
-		zconn:    conn,
-		channels: make(map[string]*sync.Map),
-		_closed:  make(chan struct{}),
-	}
-	go func() {
-		for {
-			select {
-			case <-client._closed:
-				return
-			case p := <-client.zconn.Recv():
-				client.mutex.RLock()
-				chs, ok := client.channels[p.MethodName()]
-				if !ok {
-					log.Printf("[zrpc-cli]: returned result cannot find methodfunc")
-					continue
-				}
-				client.mutex.RUnlock()
-				msgid := p.Get(zrpc.MESSAGEID)
-				ch, ok := chs.Load(msgid)
-				if !ok {
-					log.Printf("[zrpc-cli]: returned result cannot find consumer, %s, %+v", msgid, p)
-					continue
-				}
-
-				ch.(methodChannel).Receive(p)
-			}
-		}
-	}()
-
-	return client, nil
-}
-
-// NewClient 使用注册/发现中心创建客户端
-func NewClient(discover zrpc.ServiceDiscover) (*ZrpcClient, error) {
-	identity := "cli-" + uuid.NewRandom().String()
-	conn, err := newConnectManager(identity)
+	endpoint, err := b.Pick(ctx, endpoints)
 	if err != nil {
 		return nil, err
 	}
-	client := &ZrpcClient{
-		identity:         identity,
-		zconn:            conn,
-		channels:         make(map[string]*sync.Map),
-		serviceDiscovery: discover,
-		_closed:          make(chan struct{}),
-	}
-	go client.serviceDiscovery.Watch(conn)
-	go func() {
-		for {
-			select {
-			case <-client._closed:
-				return
-			case p := <-client.zconn.Recv():
-				client.mutex.RLock()
-				chs, ok := client.channels[p.MethodName()]
-				if !ok {
-					log.Printf("[zrpc-cli]: returned result cannot find methodfunc")
-					continue
-				}
-				client.mutex.RUnlock()
-				msgid := p.Get(zrpc.MESSAGEID)
-				ch, ok := chs.Load(msgid)
-				if !ok {
-					log.Printf("[zrpc-cli]: returned result cannot find consumer, %s", msgid)
-					continue
-				}
-
-				ch.(methodChannel).Receive(p)
-			}
-		}
-	}()
-
-	return client, nil
-}
-
-func (cli *ZrpcClient) Identity() string {
-	return cli.identity
-}
-
-func (cli *ZrpcClient) isClosed() bool {
-	select {
-	case <-cli._closed:
-		return true
-	default:
-		return false
-	}
-}
-
-// Decorator 将 server proxy 装饰为可调用 server
-func (cli *ZrpcClient) Decorator(name string, i any, retry int) error {
-	if cli.isClosed() {
-		return ErrClosed
-	}
-
-	_, ok := cli.services.LoadOrStore(name, i)
-	if ok {
-		return fmt.Errorf("service [%s] is exists", name)
-	}
-
-	proxy := newInstanceProxy(name, i, cli)
-	err := proxy.init()
+	conn, err := opts.Transport.Dial(ctx, endpoint, transport.DialOptions{})
 	if err != nil {
-		cli.services.Delete(name)
-		return err
+		return nil, err
+	}
+	return &Client{opts: opts, conn: conn}, nil
+}
+
+func (c *Client) Invoke(ctx context.Context, method string, value any) (*zrpc.Response, error) {
+	req, err := zrpc.NewRequest(method, value, c.opts.Codec)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := c.conn.OpenStream(ctx, method, req.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	if err := stream.SendFrame(ctx, &protocol.Frame{
+		Type:      protocol.FrameData,
+		StreamID:  stream.ID(),
+		Direction: protocol.DirectionClientToServer,
+		Payload:   req.Body,
+	}); err != nil {
+		_ = stream.Reset(ctx, &status.Status{Code: status.Unknown, Message: err.Error()})
+		return nil, err
 	}
 
-	return nil
-}
-
-func (cli *ZrpcClient) get(context.Context) (client, error) {
-	if cli.isClosed() {
-		return nil, ErrClosed
+	respFrame, err := stream.RecvFrame(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return cli, nil
-}
-
-func (cli *ZrpcClient) put(client) {}
-
-// GetSerivce 获取已注册 rpc 服务实例以供使用
-func (cli *ZrpcClient) GetSerivce(name string) (any, bool) {
-	if cli.isClosed() {
-		return nil, false
+	st := status.Status{Code: status.OK}
+	if respFrame.Status != nil {
+		st = *respFrame.Status
 	}
-	return cli.services.Load(name)
-}
-
-func (cli *ZrpcClient) getChannels(methodName string) *sync.Map {
-	cli.mutex.RLock()
-	chs, ok := cli.channels[methodName]
-	if !ok {
-		cli.mutex.RUnlock()
-		cli.mutex.Lock()
-		chs, ok = cli.channels[methodName]
-		if !ok {
-			chs = new(sync.Map)
-			cli.channels[methodName] = chs
-		}
-		cli.mutex.Unlock()
-		return chs
+	if st.Code != status.OK {
+		return nil, status.WithDetails(status.Error(st.Code, st.Message), st.Details...)
 	}
-
-	cli.mutex.RUnlock()
-	return chs
+	return zrpc.NewResponseBytes(respFrame.Metadata, respFrame.Payload, c.opts.Codec)
 }
 
-func (cli *ZrpcClient) insertNewChannel(methodName string, ch methodChannel) {
-	chs := cli.getChannels(methodName)
-	chs.Store(ch.MsgID(), ch)
-}
-
-func (cli *ZrpcClient) removeChannel(methodName string, msgid string) {
-	chs := cli.getChannels(methodName)
-	chs.Delete(msgid)
-}
-
-// Send 发送 pack
-func (cli *ZrpcClient) Send(p *zrpc.Pack) (string, error) {
-	return cli.zconn.Send(p)
-}
-
-// SpecifySend 向指定服务节点发送 pack
-func (cli *ZrpcClient) SpecifySend(id string, p *zrpc.Pack) error {
-	return cli.zconn.SpecifySend(id, p)
-}
-
-func (cli *ZrpcClient) Close() error {
-	if cli.isClosed() {
+func (c *Client) Close(ctx context.Context) error {
+	if c == nil || c.conn == nil {
 		return nil
 	}
-	if cli.serviceDiscovery != nil {
-		cli.serviceDiscovery.Stop()
-	}
-
-	cli.zconn.Close()
-	close(cli._closed)
-	return nil
+	return c.conn.Close(ctx)
 }
