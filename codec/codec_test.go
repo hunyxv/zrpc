@@ -48,3 +48,17 @@ func TestJSONRoundTrip(t *testing.T) {
 		t.Fatalf("round trip = %+v, want %+v", out, in)
 	}
 }
+
+func TestJSONUnmarshalError(t *testing.T) {
+	var out samplePayload
+	if err := JSON().Unmarshal([]byte("{"), &out); err == nil {
+		t.Fatal("JSON().Unmarshal malformed payload returned nil error")
+	}
+}
+
+func TestMsgpackUnmarshalError(t *testing.T) {
+	var out samplePayload
+	if err := Msgpack().Unmarshal([]byte{0xc1}, &out); err == nil {
+		t.Fatal("Msgpack().Unmarshal malformed payload returned nil error")
+	}
+}

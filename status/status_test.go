@@ -1,6 +1,7 @@
 package status
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -60,5 +61,27 @@ func TestWithDetails(t *testing.T) {
 	}
 	if !slices.Equal(st.Details, []string{"id=42", "resource=user"}) {
 		t.Fatalf("WithDetails status details = %#v, want %#v", st.Details, []string{"id=42", "resource=user"})
+	}
+}
+
+func TestContextErrorsMapToStatusCodes(t *testing.T) {
+	if st := FromError(context.Canceled); st.Code != Canceled {
+		t.Fatalf("FromError(context.Canceled).Code = %v, want %v", st.Code, Canceled)
+	}
+	if st := FromError(context.DeadlineExceeded); st.Code != DeadlineExceeded {
+		t.Fatalf("FromError(context.DeadlineExceeded).Code = %v, want %v", st.Code, DeadlineExceeded)
+	}
+	wrapped := errors.Join(errors.New("outer"), context.Canceled)
+	if st := FromError(wrapped); st.Code != Canceled {
+		t.Fatalf("FromError(wrapped canceled).Code = %v, want %v", st.Code, Canceled)
+	}
+}
+
+func TestOKStatusIsNilError(t *testing.T) {
+	if err := Error(OK, "ignored"); err != nil {
+		t.Fatalf("Error(OK) = %v, want nil", err)
+	}
+	if err := WithDetails(nil, "ignored"); err != nil {
+		t.Fatalf("WithDetails(nil) = %v, want nil", err)
 	}
 }

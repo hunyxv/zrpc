@@ -13,19 +13,25 @@ func TestNewSetAppendGetValues(t *testing.T) {
 
 	md.Set("Trace-ID", "abc")
 	md.Append("Trace-ID", "def")
-	md.Set("trace-id", "lower")
 
-	if got := md.Get("Trace-ID"); got != "abc" {
-		t.Fatalf("Get(Trace-ID) = %q, want %q", got, "abc")
+	if got := md.Get("trace-id"); got != "abc" {
+		t.Fatalf("Get(trace-id) = %q, want %q", got, "abc")
 	}
 	if got := md.Get("missing"); got != "" {
 		t.Fatalf("Get(missing) = %q, want empty string", got)
 	}
-	if got := md.Values("Trace-ID"); !slices.Equal(got, []string{"abc", "def"}) {
-		t.Fatalf("Values(Trace-ID) = %#v, want %#v", got, []string{"abc", "def"})
+	if got := md.Values("TRACE-ID"); !slices.Equal(got, []string{"abc", "def"}) {
+		t.Fatalf("Values(TRACE-ID) = %#v, want %#v", got, []string{"abc", "def"})
 	}
-	if got := md.Values("trace-id"); !slices.Equal(got, []string{"lower"}) {
-		t.Fatalf("Values(trace-id) = %#v, want %#v", got, []string{"lower"})
+}
+
+func TestZeroValueMetadataIsWritable(t *testing.T) {
+	var md MD
+	md.Set("Authorization", "Bearer token")
+	md.Append("Authorization", "tenant=one")
+
+	if got := md.Values("authorization"); !slices.Equal(got, []string{"Bearer token", "tenant=one"}) {
+		t.Fatalf("zero-value metadata values = %#v, want %#v", got, []string{"Bearer token", "tenant=one"})
 	}
 }
 
@@ -80,5 +86,18 @@ func TestMergeAppendsValuesInArgumentOrder(t *testing.T) {
 	first["k"][0] = "changed"
 	if got := merged.Values("k"); !slices.Equal(got, []string{"a", "b", "c"}) {
 		t.Fatalf("merged Values(k) after source mutation = %#v, want %#v", got, []string{"a", "b", "c"})
+	}
+}
+
+func TestMergeCanonicalizesKeys(t *testing.T) {
+	first := New()
+	first.Set("Trace-ID", "a")
+	second := New()
+	second.Append("trace-id", "b")
+
+	merged := Merge(first, second)
+
+	if got := merged.Values("TRACE-ID"); !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatalf("merged Values(TRACE-ID) = %#v, want %#v", got, []string{"a", "b"})
 	}
 }
