@@ -1,74 +1,74 @@
-# zrpc Core Redesign Design
+# zrpc 核心重构设计
 
-Date: 2026-07-10
+日期：2026-07-10
 
-## Status
+## 状态
 
-Approved design for a v1 core rewrite.
+已确认的 v1 核心重构设计。
 
-## Context
+## 背景
 
-The current zrpc implementation couples RPC semantics directly to ZeroMQ sockets, reflection-based registration, global server state, and cluster-oriented broker behavior. Previous review identified issues around unbounded ZeroMQ queues, missing send failure visibility, incomplete stream state handling, weak error propagation, and hard-to-extend transport boundaries.
+当前 zrpc 实现把 RPC 语义直接耦合在 ZeroMQ socket、反射注册、全局服务状态和面向集群的 broker 行为上。前序 review 已经指出多类问题：ZeroMQ 队列无上限、发送失败不可见、stream 状态处理不完整、错误响应传播不可靠、transport 边界不清晰，后续扩展 HTTP/2、QUIC、TCP 或集群能力都会比较困难。
 
-The new direction is a breaking redesign. Compatibility with the existing API is not required. The repository and a few product concepts remain, but the core implementation should be rewritten around explicit interfaces, testable protocol state, and a transport abstraction.
+新的方向是破坏兼容性的重构。不要求兼容现有 API。仓库和少量产品概念保留，但核心实现需要围绕显式接口、可测试协议状态和 transport 抽象重新设计。
 
-## Goals
+## 目标
 
-- Provide a robust Go-to-Go RPC framework.
-- Support four RPC modes:
-  - unary request-response
-  - client streaming
-  - server streaming
-  - bidirectional streaming
-- Use explicit handler/client APIs as the stable core.
-- Provide generic typed helpers for business ergonomics.
-- Abstract transport so ZeroMQ is only the first implementation.
-- Implement ZeroMQ transport in v1.
-- Leave clear extension points for HTTP/2, QUIC, and TCP transports.
-- Support pluggable unary and stream middleware.
-- Support OpenTelemetry tracing directly.
-- Support pluggable metrics collection without binding to Prometheus.
-- Support a stable status-code error model with details.
-- Implement internal per-stream flow control and backpressure.
-- Expose minimal resolver/balancer interfaces for future cluster support.
-- Keep v1 single-node: one server endpoint, many clients.
+- 提供一个稳健的 Go-to-Go RPC 框架。
+- 支持四种 RPC 模式：
+  - unary 请求-响应
+  - client streaming 流式请求
+  - server streaming 流式响应
+  - bidirectional streaming 双向流式
+- 使用显式 Handler/Client API 作为稳定核心。
+- 在核心 API 之上提供泛型 typed helper，提升业务使用体验。
+- 抽象 transport，让 ZeroMQ 只是第一个实现。
+- v1 实现 ZeroMQ transport。
+- 为后续 HTTP/2、QUIC、TCP transport 留出清晰扩展点。
+- 支持可插拔 unary 和 stream middleware。
+- 直接支持 OpenTelemetry 链路追踪。
+- 支持可插拔 metrics collector，但不绑定 Prometheus。
+- 使用稳定的 status code 错误模型，并支持 details。
+- 实现内部 per-stream 流控和 backpressure。
+- 暴露最小 Resolver/Balancer 接口，为后续集群能力预留扩展点。
+- v1 保持单节点：一个 server endpoint，多个 client。
 
-## Non-Goals for v1
+## v1 非目标
 
-- No compatibility with old `RegisterServer`, `Run`, `Decorator`, broker, or proxy APIs.
-- No cluster runtime behavior.
-- No service discovery implementation for etcd, consul, or zookeeper.
-- No node-to-node forwarding.
-- No client-side multi-node load balancing beyond a static single endpoint.
-- No cross-language SDK.
-- No IDL or code generation.
-- No automatic retry or hedging.
-- No transport-layer TLS/mTLS for ZeroMQ.
-- No Prometheus exporter in core.
-- No public per-message middleware API, though hooks are reserved internally.
+- 不兼容旧的 `RegisterServer`、`Run`、`Decorator`、broker 或 proxy API。
+- 不实现集群运行时行为。
+- 不实现 etcd、consul、zookeeper 服务发现。
+- 不实现节点间转发。
+- 不实现真正的多 endpoint client-side load balancing；v1 只支持静态单 endpoint。
+- 不做跨语言 SDK。
+- 不做 IDL 或代码生成。
+- 不做自动 retry 或 hedging。
+- ZeroMQ transport v1 不做传输层 TLS/mTLS。
+- core 不内置 Prometheus exporter。
+- 不公开 per-message middleware 作为 v1 业务 API，但内部保留 hook。
 
-## Key Decisions
+## 关键决策
 
-### API Style
+### API 风格
 
-Use explicit Handler/Client APIs as the core. Provide generic typed helpers on top.
+核心使用显式 Handler/Client API，在上层提供泛型 typed helper。
 
-Rationale:
+理由：
 
-- The core remains simple, inspectable, and testable.
-- Middleware, stream lifecycle, status, metadata, and transport logic do not depend on reflection.
-- Business users still get type-friendly Go APIs through generic helpers.
-- Reflection-based proxy sugar can be added later without polluting core design.
+- 核心简单、可检查、可测试。
+- middleware、stream 生命周期、status、metadata 和 transport 逻辑不依赖反射。
+- 业务用户仍能通过泛型 helper 获得类型友好的 Go API。
+- 后续可以重新添加基于 interface/proxy 的反射语法糖，不污染底层设计。
 
-### Language Scope
+### 语言范围
 
-v1 is Go-to-Go only.
+v1 只面向 Go-to-Go。
 
-Protocol and codec interfaces should not intentionally lock the framework to `gob` or Go-private reflection data, but v1 does not need cross-language SDKs, IDL, or codegen.
+协议和 codec 接口不应故意绑定到 `gob` 或 Go 私有反射数据，但 v1 不需要跨语言 SDK、IDL 或 codegen。
 
 ### Codec
 
-Use `msgpack` as the default codec. Provide `json` as a debug codec. Keep a `Codec` interface for future protobuf support.
+默认 codec 使用 `msgpack`。内置 `json` 作为调试 codec。保留 `Codec` 接口，后续可添加 protobuf。
 
 ```go
 type Codec interface {
@@ -78,42 +78,42 @@ type Codec interface {
 }
 ```
 
-### Transport Strategy
+### Transport 策略
 
-Use transport abstraction. Implement ZeroMQ first. Reserve room for HTTP/2, QUIC, and TCP.
+使用 transport 抽象。先实现 ZeroMQ，后续预留 HTTP/2、QUIC、TCP。
 
-Transport trade-offs:
+各 transport 的取舍：
 
-| Transport | Best fit | Main strength | Main cost |
+| Transport | 适合场景 | 主要优势 | 主要成本 |
 | --- | --- | --- | --- |
-| ZeroMQ | Internal high-performance messaging and custom topology | Native message model and ROUTER/DEALER flexibility | RPC lifecycle, flow control, and observability must be implemented by zrpc |
-| HTTP/2 | gRPC-like service RPC | Mature stream/header/TLS/proxy ecosystem | TCP connection-level head-of-line blocking |
-| QUIC | future weak-network or HTTP/3-like RPC | independent streams, TLS 1.3, connection migration | UDP operations and implementation complexity |
-| TCP | minimal dependency internal transport | simple and fully controllable | framing, mux, flow control, TLS, and tooling must be built |
+| ZeroMQ | 内网高性能消息和自定义拓扑 | 原生消息模型，ROUTER/DEALER 灵活 | RPC 生命周期、流控、可观测性需要 zrpc 自己补齐 |
+| HTTP/2 | gRPC-like 服务 RPC | stream/header/TLS/proxy 生态成熟 | 受 TCP 连接级队头阻塞影响 |
+| QUIC | 未来弱网或 HTTP/3-like RPC | 独立 stream、TLS 1.3、连接迁移 | UDP 运维和实现复杂度较高 |
+| TCP | 极简依赖的内网 transport | 简单、完全可控 | framing、mux、流控、TLS、工具链都要自己实现 |
 
-## Package Layout
+## 包结构
 
-Proposed package structure:
+建议包布局：
 
 ```text
 zrpc/
-  codec/          codec interface and msgpack/json implementations
-  metadata/       RPC metadata map and helpers
-  status/         status code, RPC error, details
-  protocol/       frames, stream state, window/update semantics
-  transport/      Transport, Listener, Conn, Stream interfaces
+  codec/          codec 接口和 msgpack/json 实现
+  metadata/       RPC metadata map 和辅助函数
+  status/         status code、RPC error、details
+  protocol/       frame、stream 状态机、window/update 语义
+  transport/      Transport、Listener、Conn、Stream 接口
   transport/zmq/  ZeroMQ v1 transport
-  interceptor/    unary and stream middleware chains
-  trace/          OpenTelemetry integration
-  metrics/        pluggable metrics collector
-  resolver/       StaticResolver and future resolver interface
-  balancer/       PickFirstBalancer and future balancer interface
-  server/         Server and handler registration
-  client/         Client, Invoke, stream creation, connection management
-  typed/          generic helper APIs, or root-level generic helpers
+  interceptor/    unary 和 stream middleware 链
+  trace/          OpenTelemetry 接入
+  metrics/        可插拔 metrics collector
+  resolver/       StaticResolver 和未来 resolver 接口
+  balancer/       PickFirstBalancer 和未来 balancer 接口
+  server/         Server 和 handler 注册
+  client/         Client、Invoke、stream 创建、连接管理
+  typed/          泛型 helper API，或放在根包作为泛型 helper
 ```
 
-Core dependency direction:
+核心依赖方向：
 
 ```text
 typed helpers
@@ -123,16 +123,16 @@ typed helpers
   -> transport/zmq
 ```
 
-Transport packages must not depend on business handlers, typed helpers, or reflection registration.
+transport 包不能依赖业务 handler、typed helper 或反射注册。
 
-## High-Level Architecture
+## 高层架构
 
 ```mermaid
 flowchart TD
-    Typed["Generic typed API"] --> Core["Core Client/Server API"]
+    Typed["泛型 typed API"] --> Core["核心 Client/Server API"]
     Core --> Interceptors["Unary/Stream Interceptors"]
     Interceptors --> Protocol["Protocol Session Manager"]
-    Protocol --> Transport["Transport Abstraction"]
+    Protocol --> Transport["Transport 抽象"]
     Transport --> ZMQ["ZeroMQ Transport v1"]
 
     Core --> Codec["Codec"]
@@ -144,7 +144,7 @@ flowchart TD
     Resolver --> Balancer["Balancer"]
 ```
 
-## Core API
+## 核心 API
 
 ### Server
 
@@ -184,7 +184,7 @@ var out GetUserResp
 err = resp.Decode(&out)
 ```
 
-### Typed Helpers
+### Typed Helper
 
 ```go
 zrpc.HandleUnary[GetUserReq, GetUserResp](srv, "user.Get",
@@ -198,7 +198,7 @@ resp, err := zrpc.Invoke[GetUserReq, GetUserResp](ctx, cli, "user.Get", &GetUser
 })
 ```
 
-Typed stream helpers:
+typed stream helper：
 
 ```go
 zrpc.HandleClientStream[UploadChunk, UploadResult](srv, "file.Upload", uploadHandler)
@@ -206,7 +206,7 @@ zrpc.HandleServerStream[LogRequest, LogLine](srv, "log.Tail", tailHandler)
 zrpc.HandleBidiStream[ChatMessage, ChatMessage](srv, "chat.Stream", chatHandler)
 ```
 
-## Request and Response
+## Request 和 Response
 
 ```go
 type Request struct {
@@ -223,11 +223,11 @@ type Response struct {
 }
 ```
 
-`Request.Decode` and `Response.Decode` use the bound codec. Metadata carries trace context, auth, request IDs, tenant IDs, and user-defined keys.
+`Request.Decode` 和 `Response.Decode` 使用绑定的 codec。Metadata 承载 trace context、认证信息、request id、tenant id 和用户自定义键值。
 
 ## Stream API
 
-Core stream:
+核心 stream：
 
 ```go
 type Stream interface {
@@ -244,7 +244,7 @@ type Stream interface {
 }
 ```
 
-Typed stream wrappers:
+typed stream 包装：
 
 ```go
 type ClientStream[Req any, Resp any] interface {
@@ -264,17 +264,17 @@ type BidiStream[Req any, Resp any] interface {
 }
 ```
 
-## Protocol
+## 协议
 
-### RPC Modes
+### RPC 模式
 
-Unary:
+Unary：
 
 ```text
 REQUEST -> RESPONSE
 ```
 
-Client streaming:
+Client streaming：
 
 ```text
 REQUEST_OPEN
@@ -284,7 +284,7 @@ STREAM_END client->server
 RESPONSE server->client
 ```
 
-Server streaming:
+Server streaming：
 
 ```text
 REQUEST_OPEN
@@ -294,7 +294,7 @@ STREAM_END server->client
 RESPONSE server->client
 ```
 
-Bidirectional streaming:
+Bidirectional streaming：
 
 ```text
 REQUEST_OPEN
@@ -304,7 +304,7 @@ STREAM_END server->client
 RESPONSE server->client
 ```
 
-### Frames
+### Frame
 
 ```go
 type FrameType uint8
@@ -331,33 +331,33 @@ type Frame struct {
 }
 ```
 
-### Flow Control
+### 流控
 
-v1 implements internal per-stream backpressure:
+v1 实现内部 per-stream backpressure：
 
-- Each stream has send and receive windows.
-- Windows are byte-based.
-- `Send` blocks when the send window is exhausted.
-- `Recv` consumption sends `FrameWindowUpdate`.
-- Each stream has max in-flight bytes.
-- Each connection has max in-flight bytes.
-- Each message has max size.
-- Exceeding limits returns `ResourceExhausted`.
-- Context cancellation or deadline sends `FrameReset` or `FrameEnd` as appropriate.
+- 每个 stream 有 send window 和 receive window。
+- window 按字节计算。
+- `Send` 在 send window 耗尽时阻塞。
+- `Recv` 消费数据后发送 `FrameWindowUpdate`。
+- 每个 stream 有最大 in-flight bytes。
+- 每个 connection 有最大 in-flight bytes。
+- 每条消息有最大 size。
+- 超限返回 `ResourceExhausted`。
+- context cancel 或 deadline 触发时，根据状态发送 `FrameReset` 或 `FrameEnd`。
 
-User APIs expose simple `Send` and `Recv`; window details remain internal.
+用户 API 只暴露简单的 `Send` 和 `Recv`，window 细节留在内部。
 
 ### Half-Close
 
-Bidirectional streaming requires true half-close semantics:
+双向流式必须支持真正的 half-close 语义：
 
-- `CloseSend` closes only the local send direction.
-- The peer observes `FrameEnd(direction)` and its `Recv` returns EOF/status.
-- `CloseRecv` means the local side will no longer accept receive frames and usually triggers drain or reset.
-- `Reset` aborts the whole stream.
-- The stream is fully closed only when both directions are closed and the final response is handled.
+- `CloseSend` 只关闭本端发送方向。
+- 对端观察到 `FrameEnd(direction)` 后，其 `Recv` 返回 EOF/status。
+- `CloseRecv` 表示本端不再接收 frame，通常触发 drain 或 reset。
+- `Reset` 中止整个 stream。
+- 只有两个方向都关闭，并且最终 response 已处理后，stream 才完全关闭。
 
-## Transport Abstraction
+## Transport 抽象
 
 ```go
 type Transport interface {
@@ -392,7 +392,7 @@ type TransportStream interface {
 }
 ```
 
-Endpoint:
+Endpoint：
 
 ```go
 type Endpoint struct {
@@ -401,16 +401,16 @@ type Endpoint struct {
 }
 ```
 
-Examples:
+示例：
 
 - `Endpoint{Transport: "zmq", Address: "tcp://127.0.0.1:9000"}`
-- Future: `Endpoint{Transport: "http2", Address: "https://svc.internal:9443"}`
+- 未来：`Endpoint{Transport: "http2", Address: "https://svc.internal:9443"}`
 
 ## ZeroMQ Transport v1
 
-Use `DEALER` on clients and `ROUTER` on the server.
+client 使用 `DEALER`，server 使用 `ROUTER`。
 
-Frame mapping:
+Frame 映射：
 
 ```text
 Client DEALER:
@@ -420,28 +420,28 @@ Server ROUTER:
   [clientIdentity][encoded protocol.Frame]
 ```
 
-Rules:
+规则：
 
-- One owner goroutine accesses each ZeroMQ socket.
-- `SendFrame` receives success or failure from the owner goroutine.
-- `ROUTER_MANDATORY` is enabled.
-- `IMMEDIATE` is enabled where supported and appropriate.
-- `SNDHWM` and `RCVHWM` are finite.
-- `LINGER` is finite.
-- Close and drain use done channels and wait groups, not fixed sleeps.
-- The protocol layer multiplexes many stream IDs over one ZeroMQ connection.
+- 每个 ZeroMQ socket 只允许一个 owner goroutine 访问。
+- `SendFrame` 必须能收到 owner goroutine 返回的成功或失败结果。
+- 启用 `ROUTER_MANDATORY`。
+- 在支持且合适的地方启用 `IMMEDIATE`。
+- `SNDHWM` 和 `RCVHWM` 必须有限。
+- `LINGER` 必须有限。
+- Close 和 Drain 使用 done channel / wait group，不使用固定 sleep。
+- protocol 层在一个 ZeroMQ connection 上复用多个 stream id。
 
-ZeroMQ v1 does not implement:
+ZeroMQ v1 不实现：
 
-- PUB/SUB state broadcast
-- node-to-node routing
-- broker devices
-- cluster peer state
+- PUB/SUB 状态广播
+- 节点间路由
+- broker device
+- 集群 peer state
 - CurveZMQ
 
-## Resolver and Balancer
+## Resolver 和 Balancer
 
-v1 exposes minimal extension interfaces but only implements single-endpoint behavior.
+v1 暴露最小扩展接口，但只实现单 endpoint 行为。
 
 ```go
 type Resolver interface {
@@ -454,16 +454,16 @@ type Balancer interface {
 }
 ```
 
-v1 implementations:
+v1 实现：
 
 - `StaticResolver`
 - `PickFirstBalancer`
 
-No etcd, consul, zookeeper, or multi-node watch is implemented in v1.
+v1 不实现 etcd、consul、zookeeper 或多节点 watch。
 
 ## Middleware
 
-Unary:
+Unary：
 
 ```go
 type UnaryHandler interface {
@@ -473,7 +473,7 @@ type UnaryHandler interface {
 type UnaryInterceptor func(ctx context.Context, req *Request, next UnaryHandler) (*Response, error)
 ```
 
-Stream:
+Stream：
 
 ```go
 type StreamHandler interface {
@@ -483,18 +483,18 @@ type StreamHandler interface {
 type StreamInterceptor func(ctx context.Context, stream Stream, next StreamHandler) error
 ```
 
-Middleware can:
+middleware 可以：
 
-- read and write metadata
-- inspect method, stream ID, and peer info
-- inject principal/auth state into context
-- log requests and stream lifecycle
-- record metrics
-- set trace attributes
-- recover panics
-- rate limit or reject calls
+- 读取和写入 metadata
+- 检查 method、stream id 和 peer info
+- 向 context 注入 principal/auth 状态
+- 记录日志和 stream 生命周期
+- 记录 metrics
+- 设置 trace attributes
+- recover panic
+- 限流或拒绝调用
 
-Per-message hooks are reserved:
+预留 per-message hook：
 
 ```go
 type MessageHook interface {
@@ -503,24 +503,24 @@ type MessageHook interface {
 }
 ```
 
-These are not a public v1 business-facing API unless needed internally.
+除非内部需要，否则它不是 v1 公开的业务 API。
 
 ## OpenTelemetry
 
-v1 directly uses OpenTelemetry.
+v1 直接使用 OpenTelemetry。
 
-Behavior:
+行为：
 
-- Client unary creates a client span.
-- Server unary extracts metadata and creates a server span.
-- Streams create one lifetime span.
-- Stream messages are not individual spans by default.
-- Message activity can be recorded as sampled span events.
-- Trace context propagates through metadata using W3C tracecontext.
-- Handler contexts contain the active server span.
-- If the application does not configure a tracer provider, tracing remains no-op.
+- client unary 创建 client span。
+- server unary 从 metadata 提取 trace context 并创建 server span。
+- stream 创建一个覆盖整个生命周期的 span。
+- stream message 默认不单独创建 span。
+- message 活动可按采样策略记录为 span event。
+- trace context 通过 metadata 传播，使用 W3C tracecontext。
+- handler 收到的 context 包含当前 server span。
+- 应用未配置 tracer provider 时，tracing 保持 no-op。
 
-Suggested attributes:
+建议 attributes：
 
 ```text
 rpc.system = "zrpc"
@@ -535,7 +535,7 @@ net.peer.port
 
 ## Metrics
 
-v1 provides pluggable metrics hooks and a no-op default.
+v1 提供可插拔 metrics hook，默认 no-op。
 
 ```go
 type Collector interface {
@@ -546,34 +546,34 @@ type Collector interface {
 }
 ```
 
-Metrics events should cover:
+metrics event 应覆盖：
 
 - request count
 - request latency
 - status code
-- active RPCs
-- active streams
-- stream sent and received messages
-- stream sent and received bytes
+- active RPC
+- active stream
+- stream sent/received messages
+- stream sent/received bytes
 - backpressure wait duration
 - window update count
-- transport send errors
-- transport connect/disconnect errors
+- transport send error
+- transport connect/disconnect error
 - panic count
 
-Prometheus and OpenTelemetry metrics adapters can be added later.
+Prometheus 和 OpenTelemetry metrics adapter 后续再加。
 
-## Security
+## 安全
 
-v1 does not provide ZeroMQ transport-layer encryption.
+v1 不提供 ZeroMQ 传输层加密。
 
-Security model:
+安全模型：
 
-- Application-level authentication is implemented through middleware.
-- Metadata carries bearer token, API key, signatures, tenant ID, or custom credentials.
-- Auth middleware injects a principal into context.
-- Missing authentication returns `Unauthenticated`.
-- Authorization failure returns `PermissionDenied`.
+- 应用层认证通过 middleware 实现。
+- metadata 承载 bearer token、API key、签名、tenant id 或自定义凭证。
+- auth middleware 将 principal 注入 context。
+- 缺少认证返回 `Unauthenticated`。
+- 授权失败返回 `PermissionDenied`。
 
 ```go
 type Principal struct {
@@ -585,7 +585,7 @@ func PrincipalFromContext(ctx context.Context) (*Principal, bool)
 func ContextWithPrincipal(ctx context.Context, p *Principal) context.Context
 ```
 
-Transport security seam:
+transport 安全扩展点：
 
 ```go
 type SecurityConfig struct {
@@ -594,11 +594,11 @@ type SecurityConfig struct {
 }
 ```
 
-HTTP/2 and QUIC transports can later support TLS/mTLS. ZeroMQ Curve support is deferred.
+HTTP/2 和 QUIC transport 后续可以支持 TLS/mTLS。ZeroMQ Curve 支持推迟。
 
-## Status and Error Model
+## Status 和错误模型
 
-Use a stable RPC status code model:
+使用稳定的 RPC status code 模型：
 
 ```go
 type Code int
@@ -624,7 +624,7 @@ const (
 )
 ```
 
-API:
+API：
 
 ```go
 status.Error(code, message)
@@ -633,7 +633,7 @@ status.Code(err)
 status.WithDetails(err, details...)
 ```
 
-Mappings:
+映射规则：
 
 - `context.Canceled` -> `Canceled`
 - context deadline -> `DeadlineExceeded`
@@ -645,9 +645,9 @@ Mappings:
 - auth denied -> `PermissionDenied`
 - handler panic -> `Internal`
 
-## Configuration
+## 配置
 
-Server options:
+Server options：
 
 ```go
 type ServerOptions struct {
@@ -666,7 +666,7 @@ type ServerOptions struct {
 }
 ```
 
-Client options:
+Client options：
 
 ```go
 type ClientOptions struct {
@@ -686,7 +686,7 @@ type ClientOptions struct {
 }
 ```
 
-ZeroMQ options:
+ZeroMQ options：
 
 ```go
 type ZMQOptions struct {
@@ -700,45 +700,45 @@ type ZMQOptions struct {
 }
 ```
 
-Defaults must be conservative:
+默认值必须保守：
 
-- finite HWM
-- finite linger
-- max message size
-- max stream window
-- max connection in-flight bytes
-- no-op metrics collector and tracer behavior when unset
+- 有限 HWM
+- 有限 linger
+- 最大消息大小
+- 最大 stream window
+- 最大 connection in-flight bytes
+- 未配置 metrics collector 或 tracer 时使用 no-op 行为
 
-## Testing Strategy
+## 测试策略
 
-### Unit Tests
+### 单元测试
 
-- codec msgpack/json round trips
+- codec msgpack/json round trip
 - metadata copy/merge/canonicalization
-- status encode/decode and `FromError`
-- interceptor ordering and error propagation
-- resolver and balancer behavior
+- status encode/decode 和 `FromError`
+- interceptor 顺序和错误传播
+- resolver 和 balancer 行为
 - protocol frame encode/decode
-- stream state machine
-- window update and backpressure
-- context cancel and deadline handling
-- half-close behavior
+- stream 状态机
+- window update 和 backpressure
+- context cancel 和 deadline
+- half-close 行为
 
-### Fake Transport Tests
+### Fake Transport 测试
 
-The client/server and protocol layers must be testable without ZeroMQ.
+client/server 和 protocol 层必须不依赖 ZeroMQ 也能测试。
 
-Fake transport should simulate:
+fake transport 应模拟：
 
 - send error
 - receive error
-- delayed frames
-- reset frames
-- out-of-order frames
+- delayed frame
+- reset frame
+- out-of-order frame
 - peer close
 - slow receiver
 
-### ZeroMQ Integration Tests
+### ZeroMQ 集成测试
 
 - unary success
 - unary handler error
@@ -752,65 +752,65 @@ Fake transport should simulate:
 - server graceful shutdown
 - client close while in-flight
 - server close while in-flight
-- transport unavailable mapping to `Unavailable`
+- transport unavailable 映射为 `Unavailable`
 
-### Race and Stress Tests
+### Race 和压力测试
 
 - `go test -race ./...`
-- high concurrency unary calls
-- high concurrency streams
-- cancellation storms
+- 高并发 unary 调用
+- 高并发 stream
+- cancellation storm
 - close while send/recv
-- bounded-memory smoke test under slow consumer
+- slow consumer 下的 bounded-memory smoke test
 
-## Migration Plan
+## 迁移计划
 
-Because v1 is not backward compatible, migration is replacement-style:
+由于 v1 不兼容旧 API，迁移采用替换式：
 
-1. Build new packages without modifying old broker/multiplexer paths first.
-2. Implement codec, status, metadata, and protocol tests.
-3. Implement fake transport.
-4. Implement server/client core against fake transport.
-5. Implement stream state machine and flow control.
-6. Implement ZeroMQ transport.
-7. Add typed helper APIs.
-8. Rewrite examples.
-9. Rewrite README.
-10. Remove or isolate old API once the new stack is complete.
+1. 先创建新包，不在旧 broker/multiplexer 路径上修补。
+2. 实现 codec、status、metadata 和 protocol 测试。
+3. 实现 fake transport。
+4. 基于 fake transport 实现 server/client core。
+5. 实现 stream 状态机和流控。
+6. 实现 ZeroMQ transport。
+7. 添加 typed helper API。
+8. 重写 examples。
+9. 重写 README。
+10. 新栈完成后删除或隔离旧 API。
 
-## Future Work
+## 后续工作
 
 - protobuf codec
-- protobuf or custom IDL/codegen
+- protobuf 或自定义 IDL/codegen
 - HTTP/2 transport
 - QUIC transport
 - raw TCP transport
-- etcd/consul/zookeeper resolvers
-- round-robin and least-request balancers
+- etcd/consul/zookeeper resolver
+- round-robin 和 least-request balancer
 - health checking
 - reflection/introspection
-- retry and hedging with idempotency policy
+- 带幂等策略的 retry 和 hedging
 - compression
 - Prometheus adapter
 - OpenTelemetry metrics adapter
-- CurveZMQ or transport-layer security for ZeroMQ
-- reflection-based interface/proxy sugar
+- CurveZMQ 或 ZeroMQ 传输层安全
+- 基于反射的 interface/proxy 语法糖
 
-## Approval Summary
+## 确认摘要
 
-Approved constraints:
+已确认约束：
 
-- Use approach B: core rewrite while preserving the repository and a few concepts.
-- v1 is Go-to-Go only.
-- v1 uses explicit Handler/Client core APIs.
-- Generic typed helpers are provided on top.
-- v1 defaults to msgpack and includes json for debugging.
-- v1 abstracts transport and implements ZeroMQ first.
-- v1 does not implement cluster runtime behavior.
-- v1 exposes minimal Resolver/Balancer interfaces with StaticResolver and PickFirstBalancer only.
-- v1 supports unary and stream interceptors, with per-message hooks reserved.
-- v1 directly supports OpenTelemetry with no-op behavior when not configured.
-- v1 uses status codes with details.
-- v1 implements internal per-stream flow control and backpressure.
-- v1 uses application-level auth middleware and leaves transport TLS/mTLS to future transports.
-- v1 has pluggable metrics hooks without binding to Prometheus.
+- 采用方案 B：核心重写，保留仓库和少量概念。
+- v1 只面向 Go-to-Go。
+- v1 使用显式 Handler/Client core API。
+- 在核心 API 之上提供泛型 typed helper。
+- v1 默认 msgpack，并包含 json 用于调试。
+- v1 抽象 transport，并先实现 ZeroMQ。
+- v1 不实现集群运行时行为。
+- v1 暴露最小 Resolver/Balancer 接口，只实现 StaticResolver 和 PickFirstBalancer。
+- v1 支持 unary 和 stream interceptor，预留 per-message hook。
+- v1 直接支持 OpenTelemetry，未配置时 no-op。
+- v1 使用带 details 的 status code。
+- v1 实现内部 per-stream 流控和 backpressure。
+- v1 使用应用层 auth middleware，将传输层 TLS/mTLS 留给未来 transport。
+- v1 有可插拔 metrics hook，但不绑定 Prometheus。
