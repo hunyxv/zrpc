@@ -13,6 +13,8 @@ type Endpoint struct {
 	Address   string
 }
 
+const MethodMetadataKey = "method"
+
 type Transport interface {
 	Dial(ctx context.Context, endpoint Endpoint, opts DialOptions) (Conn, error)
 	Listen(endpoint Endpoint, opts ListenOptions) (Listener, error)
