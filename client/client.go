@@ -6,6 +6,7 @@ import (
 
 	"github.com/hunyxv/zrpc"
 	"github.com/hunyxv/zrpc/balancer"
+	"github.com/hunyxv/zrpc/metadata"
 	"github.com/hunyxv/zrpc/protocol"
 	"github.com/hunyxv/zrpc/resolver"
 	"github.com/hunyxv/zrpc/status"
@@ -91,6 +92,15 @@ func (c *Client) Invoke(ctx context.Context, method string, value any) (*zrpc.Re
 		return nil, status.WithDetails(status.Error(st.Code, st.Message), st.Details...)
 	}
 	return zrpc.NewResponseBytes(respFrame.Metadata, respFrame.Payload, c.opts.Codec)
+}
+
+func (c *Client) NewStream(ctx context.Context, method string) (zrpc.Stream, error) {
+	md := metadata.New()
+	stream, err := c.conn.OpenStream(ctx, method, md)
+	if err != nil {
+		return nil, err
+	}
+	return zrpc.NewInternalStream(ctx, method, md, c.opts.Codec, stream, c.opts.InitialStreamWindow), nil
 }
 
 func (c *Client) Close(ctx context.Context) error {
