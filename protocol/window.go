@@ -38,6 +38,10 @@ func (w *Window) Acquire(ctx context.Context, n int) error {
 	for {
 		w.mu.Lock()
 		w.initLocked()
+		if n > w.limit {
+			w.mu.Unlock()
+			return status.Error(status.ResourceExhausted, "protocol: window acquire exceeds limit")
+		}
 		if w.available >= n {
 			w.available -= n
 			w.mu.Unlock()

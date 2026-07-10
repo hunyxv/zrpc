@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/hunyxv/zrpc/status"
 )
 
 func TestWindowAcquireRelease(t *testing.T) {
@@ -74,6 +76,21 @@ func TestWindowRejectsNegativeAcquire(t *testing.T) {
 	}
 	if got, want := window.Available(), 1; got != want {
 		t.Fatalf("Available() after Acquire(-1) = %d, want %d", got, want)
+	}
+}
+
+func TestWindowAcquireRejectsAboveLimit(t *testing.T) {
+	window := NewWindow(2)
+
+	err := window.Acquire(context.Background(), 3)
+	if err == nil {
+		t.Fatal("Acquire() error = nil, want non-nil")
+	}
+	if st := status.FromError(err); st.Code != status.ResourceExhausted {
+		t.Fatalf("Acquire() status = %v, want %v", st.Code, status.ResourceExhausted)
+	}
+	if got, want := window.Available(), 2; got != want {
+		t.Fatalf("Available() after rejected Acquire() = %d, want %d", got, want)
 	}
 }
 
