@@ -47,7 +47,7 @@ func newMethodFunc(method *method, r iReply) (methodFunc, error) {
 		return newStreamReqRepFunc(base)
 	case ReqStreamRep:
 		return newReqStreamRepFunc(base), nil
-	case Stream:
+	case StreamMode:
 		return newStreamFunc(base)
 	}
 	return nil, fmt.Errorf("unknown function type: %+v", method.mode)

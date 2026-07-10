@@ -33,7 +33,7 @@ const (
 	ReqRep FuncMode = iota
 	StreamReqRep
 	ReqStreamRep
-	Stream
+	StreamMode
 )
 
 func (fm FuncMode) String() string {
@@ -44,7 +44,7 @@ func (fm FuncMode) String() string {
 		return "StreamReqRep"
 	case ReqStreamRep:
 		return "ReqStreamRep"
-	case Stream:
+	case StreamMode:
 		return "Stream"
 	}
 	return ""
@@ -153,7 +153,8 @@ func (rpc *RPCInstance) RegisterServer(name string, server any, conventions any)
 }
 
 // GenerateExecFunc 查找并返回可执行函数
-// 	name: /{servername}/methodname
+//
+//	name: /{servername}/methodname
 func (rpc *RPCInstance) GenerateExecFunc(name string, r iReply) (methodFunc, error) {
 	rpc.rwMutex.RLock()
 	defer rpc.rwMutex.RUnlock()

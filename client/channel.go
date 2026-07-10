@@ -34,7 +34,7 @@ func newMethodChannle(m *method, sender packSender) (methodChannel, error) {
 		return newStreamReqRepChannel(base), nil
 	case zrpc.ReqStreamRep:
 		return newReqStreamRepChannel(base), nil
-	case zrpc.Stream:
+	case zrpc.StreamMode:
 		return newStreamChannel(base), nil
 	}
 	return nil, fmt.Errorf("zrpc-cli: unknown function type: %+v", m.mode)
