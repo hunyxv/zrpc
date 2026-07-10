@@ -61,3 +61,35 @@ func TestWindowAcquireContextCanceled(t *testing.T) {
 		t.Fatal("Acquire() error = nil, want non-nil")
 	}
 }
+
+func TestWindowRejectsNegativeAcquire(t *testing.T) {
+	window := NewWindow(1)
+
+	if err := window.Acquire(context.Background(), -1); err == nil {
+		t.Fatal("Acquire(-1) error = nil, want non-nil")
+	}
+	if got, want := window.Available(), 1; got != want {
+		t.Fatalf("Available() after Acquire(-1) = %d, want %d", got, want)
+	}
+}
+
+func TestWindowIgnoresNonPositiveRelease(t *testing.T) {
+	window := NewWindow(3)
+
+	window.Release(-1)
+	window.Release(0)
+
+	if got, want := window.Available(), 3; got != want {
+		t.Fatalf("Available() after non-positive release = %d, want %d", got, want)
+	}
+}
+
+func TestZeroValueWindowReleaseIsSafe(t *testing.T) {
+	var window Window
+
+	window.Release(1)
+
+	if got, want := window.Available(), 1; got != want {
+		t.Fatalf("Available() after zero-value Release(1) = %d, want %d", got, want)
+	}
+}
