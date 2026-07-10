@@ -24,26 +24,62 @@ func (s *Session) ID() string {
 }
 
 func (s *Session) CloseSend() {
+	_ = s.TryCloseSend()
+}
+
+func (s *Session) TryCloseSend() bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reset || s.sendClosed {
+		return false
+	}
 	s.sendClosed = true
-	s.mu.Unlock()
+	return true
 }
 
 func (s *Session) CloseRecv() {
+	_ = s.TryCloseRecv()
+}
+
+func (s *Session) TryCloseRecv() bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reset || s.recvClosed {
+		return false
+	}
 	s.recvClosed = true
-	s.mu.Unlock()
+	return true
 }
 
 func (s *Session) Reset(st ...*status.Status) {
+	_ = s.TryReset(st...)
+}
+
+func (s *Session) TryReset(st ...*status.Status) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reset {
+		return false
+	}
 	s.reset = true
 	s.sendClosed = true
 	s.recvClosed = true
 	if len(st) > 0 {
 		s.resetStatus = cloneStatus(st[0])
 	}
-	s.mu.Unlock()
+	return true
+}
+
+func (s *Session) CanSend() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.reset && !s.sendClosed
+}
+
+func (s *Session) CanRecv() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.reset && !s.recvClosed
 }
 
 func (s *Session) SendClosed() bool {

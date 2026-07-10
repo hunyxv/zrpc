@@ -12,7 +12,9 @@ func TestWindowAcquireRelease(t *testing.T) {
 	if err := window.Acquire(context.Background(), 6); err != nil {
 		t.Fatalf("Acquire() error = %v", err)
 	}
-	window.Release(4)
+	if err := window.Release(4); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
 
 	if got, want := window.Available(), 8; got != want {
 		t.Fatalf("Available() = %d, want %d", got, want)
@@ -36,7 +38,9 @@ func TestWindowAcquireBlocksUntilRelease(t *testing.T) {
 	case <-time.After(10 * time.Millisecond):
 	}
 
-	window.Release(3)
+	if err := window.Release(3); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
 
 	select {
 	case err := <-done:
@@ -76,8 +80,12 @@ func TestWindowRejectsNegativeAcquire(t *testing.T) {
 func TestWindowIgnoresNonPositiveRelease(t *testing.T) {
 	window := NewWindow(3)
 
-	window.Release(-1)
-	window.Release(0)
+	if err := window.Release(-1); err != nil {
+		t.Fatalf("Release(-1) error = %v", err)
+	}
+	if err := window.Release(0); err != nil {
+		t.Fatalf("Release(0) error = %v", err)
+	}
 
 	if got, want := window.Available(), 3; got != want {
 		t.Fatalf("Available() after non-positive release = %d, want %d", got, want)
@@ -87,9 +95,46 @@ func TestWindowIgnoresNonPositiveRelease(t *testing.T) {
 func TestZeroValueWindowReleaseIsSafe(t *testing.T) {
 	var window Window
 
-	window.Release(1)
+	if err := window.Release(1); err != nil {
+		t.Fatalf("Release(1) error = %v", err)
+	}
 
 	if got, want := window.Available(), 1; got != want {
 		t.Fatalf("Available() after zero-value Release(1) = %d, want %d", got, want)
 	}
+}
+
+func TestWindowReleaseRejectsCapacityOverflow(t *testing.T) {
+	window := NewWindow(5)
+	if err := window.Acquire(context.Background(), 3); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+
+	if err := window.Release(4); err == nil {
+		t.Fatal("Release() error = nil, want non-nil")
+	}
+	if got, want := window.Available(), 2; got != want {
+		t.Fatalf("Available() after rejected Release() = %d, want %d", got, want)
+	}
+	if err := window.Release(3); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+	if got, want := window.Available(), 5; got != want {
+		t.Fatalf("Available() after valid Release() = %d, want %d", got, want)
+	}
+}
+
+func TestWindowReleaseRejectsIntOverflow(t *testing.T) {
+	window := NewWindow(maxTestInt())
+
+	if err := window.Release(1); err == nil {
+		t.Fatal("Release() error = nil, want non-nil")
+	}
+	if got, want := window.Available(), maxTestInt(); got != want {
+		t.Fatalf("Available() after overflow Release() = %d, want %d", got, want)
+	}
+}
+
+func maxTestInt() int {
+	return int(^uint(0) >> 1)
 }
