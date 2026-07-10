@@ -17,12 +17,14 @@ type Server struct {
 
 	mu    sync.RWMutex
 	unary map[string]zrpc.UnaryHandler
+	conns map[transport.Conn]struct{}
 }
 
 func New(opts Options) *Server {
 	return &Server{
 		opts:  opts,
 		unary: map[string]zrpc.UnaryHandler{},
+		conns: map[transport.Conn]struct{}{},
 	}
 }
 
@@ -45,6 +47,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 	defer func() {
 		_ = listener.Close(context.Background())
+		s.closeConns(context.Background())
 	}()
 
 	for {
@@ -52,11 +55,16 @@ func (s *Server) Serve(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		s.addConn(conn)
 		go s.serveConn(ctx, conn)
 	}
 }
 
 func (s *Server) serveConn(ctx context.Context, conn transport.Conn) {
+	defer func() {
+		_ = conn.Close(context.Background())
+		s.removeConn(conn)
+	}()
 	for {
 		stream, err := conn.AcceptStream(ctx)
 		if err != nil {
@@ -129,4 +137,28 @@ func (s *Server) sendStatus(ctx context.Context, stream transport.TransportStrea
 		Direction: protocol.DirectionServerToClient,
 		Status:    &status.Status{Code: code, Message: message},
 	})
+}
+
+func (s *Server) addConn(conn transport.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.conns[conn] = struct{}{}
+}
+
+func (s *Server) removeConn(conn transport.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.conns, conn)
+}
+
+func (s *Server) closeConns(ctx context.Context) {
+	s.mu.RLock()
+	conns := make([]transport.Conn, 0, len(s.conns))
+	for conn := range s.conns {
+		conns = append(conns, conn)
+	}
+	s.mu.RUnlock()
+	for _, conn := range conns {
+		_ = conn.Close(ctx)
+	}
 }

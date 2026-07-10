@@ -322,13 +322,16 @@ func (c *conn) addStream(stream *stream) error {
 	if c.draining {
 		return errConnectionDraining
 	}
+	stream.owner = c
 	c.streams[stream] = struct{}{}
 	return nil
 }
 
 func (c *conn) removeStream(stream *stream) {
 	c.mu.Lock()
-	delete(c.streams, stream)
+	if c.streams != nil {
+		delete(c.streams, stream)
+	}
 	c.mu.Unlock()
 }
 
@@ -346,6 +349,7 @@ func (c *conn) enqueueStream(ctx context.Context, stream *stream) error {
 		return errConnectionDraining
 	}
 	c.incoming = append(c.incoming, stream)
+	stream.owner = c
 	c.streams[stream] = struct{}{}
 	c.signalLocked()
 	return nil
@@ -390,8 +394,9 @@ func (c *conn) signalLocked() {
 }
 
 type stream struct {
-	id   string
-	peer *stream
+	id    string
+	peer  *stream
+	owner *conn
 
 	mu      sync.Mutex
 	frames  []*protocol.Frame
@@ -507,13 +512,19 @@ func (s *stream) enqueueTerminal(ctx context.Context, frame *protocol.Frame) err
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return errPeerStreamClosed
 	}
 	s.closed = true
 	s.frames = []*protocol.Frame{cloned}
+	owner := s.owner
+	s.owner = nil
 	s.signalLocked()
+	s.mu.Unlock()
+	if owner != nil {
+		owner.removeStream(s)
+	}
 	return nil
 }
 
@@ -526,19 +537,19 @@ func (s *stream) closeBoth() {
 
 func (s *stream) closeLocal(clearFrames bool) {
 	s.mu.Lock()
-	if s.closed {
-		if clearFrames {
-			s.frames = nil
-		}
-		s.mu.Unlock()
-		return
-	}
-	s.closed = true
 	if clearFrames {
 		s.frames = nil
 	}
-	s.signalLocked()
+	owner := s.owner
+	s.owner = nil
+	if !s.closed {
+		s.closed = true
+		s.signalLocked()
+	}
 	s.mu.Unlock()
+	if owner != nil {
+		owner.removeStream(s)
+	}
 }
 
 func (s *stream) closedState() bool {

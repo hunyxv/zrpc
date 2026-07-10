@@ -341,6 +341,50 @@ func TestFakeConnCloseClosesPeerAndExistingStreams(t *testing.T) {
 	}
 }
 
+func TestFakeStreamCloseUnregistersFromConnections(t *testing.T) {
+	tr := New()
+	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
+	listener, err := tr.Listen(endpoint, transport.ListenOptions{})
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	clientConn, err := tr.Dial(context.Background(), endpoint, transport.DialOptions{})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	serverConn, err := listener.Accept(context.Background())
+	if err != nil {
+		t.Fatalf("Accept() error = %v", err)
+	}
+	clientStream, err := clientConn.OpenStream(context.Background(), "user.Get", nil)
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	serverStream, err := serverConn.AcceptStream(context.Background())
+	if err != nil {
+		t.Fatalf("AcceptStream() error = %v", err)
+	}
+	if _, err := serverStream.RecvFrame(context.Background()); err != nil {
+		t.Fatalf("RecvFrame() request error = %v", err)
+	}
+
+	if got := activeStreams(clientConn); got != 1 {
+		t.Fatalf("client active streams = %d, want 1", got)
+	}
+	if got := activeStreams(serverConn); got != 1 {
+		t.Fatalf("server active streams = %d, want 1", got)
+	}
+	if err := clientStream.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if got := activeStreams(clientConn); got != 0 {
+		t.Fatalf("client active streams = %d, want 0", got)
+	}
+	if got := activeStreams(serverConn); got != 0 {
+		t.Fatalf("server active streams = %d, want 0", got)
+	}
+}
+
 func TestFakeDrainRejectsNewStreams(t *testing.T) {
 	tr := New()
 	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
@@ -437,6 +481,13 @@ func TestFakeSendFrameValidatesAndClones(t *testing.T) {
 	if got.Status == nil || got.Status.Message != "before" || got.Status.Details[0] != "d1" {
 		t.Fatalf("status = %#v", got.Status)
 	}
+}
+
+func activeStreams(transportConn transport.Conn) int {
+	c := transportConn.(*conn)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.streams)
 }
 
 func newStreamPair(t *testing.T) (transport.TransportStream, transport.TransportStream) {

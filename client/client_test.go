@@ -3,12 +3,14 @@ package client
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hunyxv/zrpc"
 	"github.com/hunyxv/zrpc/balancer"
 	"github.com/hunyxv/zrpc/codec"
+	"github.com/hunyxv/zrpc/protocol"
 	"github.com/hunyxv/zrpc/resolver"
 	"github.com/hunyxv/zrpc/server"
 	"github.com/hunyxv/zrpc/status"
@@ -127,25 +129,124 @@ func TestClientNewUsesResolverAndBalancer(t *testing.T) {
 	}
 }
 
+func TestClientInvokeRejectsUnexpectedResponseFrame(t *testing.T) {
+	tr := fake.New()
+	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
+	listener, err := tr.Listen(endpoint, transport.ListenOptions{})
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer func() { _ = listener.Close(context.Background()) }()
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept(context.Background())
+		if err != nil {
+			errCh <- err
+			return
+		}
+		stream, err := conn.AcceptStream(context.Background())
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if _, err := stream.RecvFrame(context.Background()); err != nil {
+			errCh <- err
+			return
+		}
+		if _, err := stream.RecvFrame(context.Background()); err != nil {
+			errCh <- err
+			return
+		}
+		errCh <- stream.SendFrame(context.Background(), &protocol.Frame{
+			Type:     protocol.FrameData,
+			StreamID: stream.ID(),
+			Payload:  []byte("not-a-response"),
+		})
+	}()
+
+	cli, err := New(Options{Transport: tr, Target: endpoint, Codec: codec.Msgpack()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = cli.Close(context.Background()) }()
+
+	_, err = cli.Invoke(context.Background(), "hello.Say", unaryReq{Name: "zrpc"})
+	if err == nil {
+		t.Fatal("Invoke() error = nil, want non-nil")
+	}
+	if serveErr := <-errCh; serveErr != nil {
+		t.Fatalf("fake server error = %v", serveErr)
+	}
+}
+
+func TestServerCancelClosesAcceptedClientConnection(t *testing.T) {
+	tr := fake.New()
+	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
+	srv := server.New(server.Options{Transport: tr, Endpoint: endpoint, Codec: codec.Msgpack()})
+	run := startServer(t, srv)
+	t.Cleanup(func() {
+		run.cancel()
+		if err := run.wait(); err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Serve() error = %v", err)
+		}
+	})
+
+	cli := waitForClient(t, Options{Transport: tr, Target: endpoint, Codec: codec.Msgpack()})
+	run.cancel()
+	if err := run.wait(); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Serve() error = %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	ctx, cancelInvoke := context.WithTimeout(context.Background(), time.Second)
+	defer cancelInvoke()
+	_, err := cli.Invoke(ctx, "missing.Method", unaryReq{Name: "zrpc"})
+	if err == nil {
+		t.Fatal("Invoke() after server cancel error = nil, want non-nil")
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("Invoke() after server cancel waited for deadline")
+	}
+}
+
 func serveInBackground(t *testing.T, srv *server.Server) context.CancelFunc {
+	t.Helper()
+	run := startServer(t, srv)
+	t.Cleanup(func() {
+		run.cancel()
+		if err := run.wait(); err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Serve() error = %v", err)
+		}
+	})
+	return run.cancel
+}
+
+type serverRun struct {
+	cancel context.CancelFunc
+	errCh  chan error
+	once   sync.Once
+	err    error
+}
+
+func startServer(t *testing.T, srv *server.Server) *serverRun {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.Serve(ctx)
 	}()
-	t.Cleanup(func() {
-		cancel()
+	return &serverRun{cancel: cancel, errCh: errCh}
+}
+
+func (r *serverRun) wait() error {
+	r.once.Do(func() {
 		select {
-		case err := <-errCh:
-			if err != nil && !errors.Is(err, context.Canceled) {
-				t.Fatalf("Serve() error = %v", err)
-			}
+		case r.err = <-r.errCh:
 		case <-time.After(time.Second):
-			t.Fatal("Serve() did not stop after context cancellation")
+			r.err = errors.New("Serve() did not stop after context cancellation")
 		}
 	})
-	return cancel
+	return r.err
 }
 
 func waitForClient(t *testing.T, opts Options) *Client {

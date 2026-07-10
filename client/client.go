@@ -57,6 +57,9 @@ func (c *Client) Invoke(ctx context.Context, method string, value any) (*zrpc.Re
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		_ = stream.Close(context.Background())
+	}()
 	if err := stream.SendFrame(ctx, &protocol.Frame{
 		Type:      protocol.FrameData,
 		StreamID:  stream.ID(),
@@ -70,6 +73,15 @@ func (c *Client) Invoke(ctx context.Context, method string, value any) (*zrpc.Re
 	respFrame, err := stream.RecvFrame(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if respFrame.Type == protocol.FrameReset {
+		if respFrame.Status != nil {
+			return nil, status.WithDetails(status.Error(respFrame.Status.Code, respFrame.Status.Message), respFrame.Status.Details...)
+		}
+		return nil, status.Error(status.Unknown, "stream reset")
+	}
+	if respFrame.Type != protocol.FrameResponse {
+		return nil, status.Error(status.Internal, "unexpected response frame")
 	}
 	st := status.Status{Code: status.OK}
 	if respFrame.Status != nil {
