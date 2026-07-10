@@ -34,7 +34,28 @@ func NewRequest(method string, value any, c codec.Codec) (*Request, error) {
 	return &Request{Method: method, Metadata: metadata.New(), Body: body, Codec: c}, nil
 }
 
+func NewRequestBytes(method string, md metadata.MD, body []byte, c codec.Codec) (*Request, error) {
+	if method == "" {
+		return nil, errors.New("zrpc: request method is required")
+	}
+	if c == nil {
+		return nil, errors.New("zrpc: request codec is required")
+	}
+	return &Request{
+		Method:   method,
+		Metadata: md.Copy(),
+		Body:     append([]byte(nil), body...),
+		Codec:    c,
+	}, nil
+}
+
 func (r *Request) Decode(v any) error {
+	if r == nil {
+		return errors.New("zrpc: request is nil")
+	}
+	if r.Codec == nil {
+		return errors.New("zrpc: request codec is required")
+	}
 	return r.Codec.Unmarshal(r.Body, v)
 }
 
@@ -49,6 +70,23 @@ func NewResponse(value any, c codec.Codec) (*Response, error) {
 	return &Response{Metadata: metadata.New(), Body: body, Codec: c}, nil
 }
 
+func NewResponseBytes(md metadata.MD, body []byte, c codec.Codec) (*Response, error) {
+	if c == nil {
+		return nil, errors.New("zrpc: response codec is required")
+	}
+	return &Response{
+		Metadata: md.Copy(),
+		Body:     append([]byte(nil), body...),
+		Codec:    c,
+	}, nil
+}
+
 func (r *Response) Decode(v any) error {
+	if r == nil {
+		return errors.New("zrpc: response is nil")
+	}
+	if r.Codec == nil {
+		return errors.New("zrpc: response codec is required")
+	}
 	return r.Codec.Unmarshal(r.Body, v)
 }

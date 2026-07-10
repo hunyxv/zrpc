@@ -15,27 +15,27 @@ type Resolver interface {
 	Watch(ctx context.Context, target string) (<-chan Update, error)
 }
 
-type staticResolver struct {
-	endpoint transport.Endpoint
+type StaticResolver struct {
+	Endpoint transport.Endpoint
 }
 
 func Static(endpoint transport.Endpoint) Resolver {
-	return staticResolver{endpoint: endpoint}
+	return StaticResolver{Endpoint: endpoint}
 }
 
-func (r staticResolver) Resolve(ctx context.Context, target string) ([]transport.Endpoint, error) {
+func (r StaticResolver) Resolve(ctx context.Context, target string) ([]transport.Endpoint, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return []transport.Endpoint{r.endpoint}, nil
+	return []transport.Endpoint{r.Endpoint}, nil
 }
 
-func (r staticResolver) Watch(ctx context.Context, target string) (<-chan Update, error) {
+func (r StaticResolver) Watch(ctx context.Context, target string) (<-chan Update, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	ch := make(chan Update, 1)
-	ch <- Update{Endpoints: []transport.Endpoint{r.endpoint}}
+	ch <- Update{Endpoints: []transport.Endpoint{r.Endpoint}}
 	close(ch)
 	return ch, nil
 }

@@ -20,6 +20,19 @@ func TestStaticResolverResolve(t *testing.T) {
 	}
 }
 
+func TestStaticResolverExportedType(t *testing.T) {
+	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
+	var r Resolver = StaticResolver{Endpoint: endpoint}
+
+	got, err := r.Resolve(context.Background(), "svc")
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if len(got) != 1 || got[0] != endpoint {
+		t.Fatalf("endpoints = %#v", got)
+	}
+}
+
 func TestStaticResolverWatch(t *testing.T) {
 	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
 	r := Static(endpoint)
