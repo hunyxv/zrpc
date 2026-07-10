@@ -417,6 +417,12 @@ func (s *stream) SendFrame(ctx context.Context, frame *protocol.Frame) error {
 	if s.peer == nil {
 		return errPeerStreamClosed
 	}
+	if frame == nil {
+		return errors.New("fake: frame is nil")
+	}
+	if frame.StreamID != s.id {
+		return errors.New("fake: frame stream id mismatch")
+	}
 	return s.peer.enqueueFrame(ctx, frame)
 }
 

@@ -402,6 +402,9 @@ func TestFakeSendFrameValidatesAndClones(t *testing.T) {
 	if err := clientStream.SendFrame(context.Background(), &protocol.Frame{Type: protocol.FrameData}); err == nil {
 		t.Fatal("SendFrame(invalid) error = nil, want non-nil")
 	}
+	if err := clientStream.SendFrame(context.Background(), &protocol.Frame{Type: protocol.FrameData, StreamID: "other"}); err == nil {
+		t.Fatal("SendFrame(wrong stream id) error = nil, want non-nil")
+	}
 
 	md := metadata.New()
 	md.Set("Key", "original")
