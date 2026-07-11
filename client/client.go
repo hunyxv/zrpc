@@ -3,13 +3,16 @@ package client
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/hunyxv/zrpc"
 	"github.com/hunyxv/zrpc/balancer"
 	"github.com/hunyxv/zrpc/metadata"
+	"github.com/hunyxv/zrpc/metrics"
 	"github.com/hunyxv/zrpc/protocol"
 	"github.com/hunyxv/zrpc/resolver"
 	"github.com/hunyxv/zrpc/status"
+	rpctrace "github.com/hunyxv/zrpc/trace"
 	"github.com/hunyxv/zrpc/transport"
 )
 
@@ -24,6 +27,9 @@ func New(opts Options) (*Client, error) {
 	}
 	if opts.Codec == nil {
 		return nil, errors.New("zrpc/client: codec is required")
+	}
+	if opts.Metrics == nil {
+		opts.Metrics = metrics.Noop()
 	}
 	r := opts.Resolver
 	if r == nil {
@@ -49,11 +55,20 @@ func New(opts Options) (*Client, error) {
 	return &Client{opts: opts, conn: conn}, nil
 }
 
-func (c *Client) Invoke(ctx context.Context, method string, value any) (*zrpc.Response, error) {
+func (c *Client) Invoke(ctx context.Context, method string, value any) (resp *zrpc.Response, err error) {
+	info := metrics.RPCInfo{Method: method}
+	c.opts.Metrics.OnRPCStart(ctx, info)
+	start := time.Now()
+	defer func() {
+		st := status.FromError(err)
+		c.opts.Metrics.OnRPCFinish(ctx, info, &st, time.Since(start))
+	}()
+
 	req, err := zrpc.NewRequest(method, value, c.opts.Codec)
 	if err != nil {
 		return nil, err
 	}
+	rpctrace.Inject(ctx, req.Metadata)
 	stream, err := c.conn.OpenStream(ctx, method, req.Metadata)
 	if err != nil {
 		return nil, err
@@ -97,6 +112,7 @@ func (c *Client) Invoke(ctx context.Context, method string, value any) (*zrpc.Re
 func (c *Client) NewStream(ctx context.Context, method string) (zrpc.Stream, error) {
 	md := metadata.New()
 	md.Set(transport.ModeMetadataKey, transport.ModeStream)
+	rpctrace.Inject(ctx, md)
 	stream, err := c.conn.OpenStream(ctx, method, md)
 	if err != nil {
 		return nil, err

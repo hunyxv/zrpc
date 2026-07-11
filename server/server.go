@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/hunyxv/zrpc"
+	"github.com/hunyxv/zrpc/metrics"
 	"github.com/hunyxv/zrpc/protocol"
 	"github.com/hunyxv/zrpc/status"
+	rpctrace "github.com/hunyxv/zrpc/trace"
 	"github.com/hunyxv/zrpc/transport"
 )
 
@@ -22,6 +25,9 @@ type Server struct {
 }
 
 func New(opts Options) *Server {
+	if opts.Metrics == nil {
+		opts.Metrics = metrics.Noop()
+	}
 	return &Server{
 		opts:   opts,
 		unary:  map[string]zrpc.UnaryHandler{},
@@ -96,6 +102,7 @@ func (s *Server) serveUnaryStream(ctx context.Context, stream transport.Transpor
 		_ = s.sendStatus(ctx, stream, requestFrame.StreamID, status.InvalidArgument, "method is required")
 		return
 	}
+	ctx = rpctrace.Extract(ctx, requestFrame.Metadata)
 	if handler := s.streamHandler(method); handler != nil {
 		rpcStream := zrpc.NewInternalStream(ctx, method, requestFrame.Metadata, s.opts.Codec, stream, s.opts.InitialStreamWindow, protocol.DirectionServerToClient)
 		if err := handler.HandleStream(ctx, rpcStream); err != nil {
@@ -119,18 +126,12 @@ func (s *Server) serveUnaryStream(ctx context.Context, stream transport.Transpor
 		return
 	}
 
-	handler := s.unaryHandler(method)
-	if handler == nil {
-		_ = s.sendStatus(ctx, stream, requestFrame.StreamID, status.Unimplemented, fmt.Sprintf("unknown method %q", method))
-		return
-	}
-
 	req, err := zrpc.NewRequestBytes(method, requestFrame.Metadata, bodyFrame.Payload, s.opts.Codec)
 	if err != nil {
 		_ = s.sendStatus(ctx, stream, requestFrame.StreamID, status.InvalidArgument, err.Error())
 		return
 	}
-	resp, err := handler.HandleUnary(ctx, req)
+	resp, err := s.invokeUnary(ctx, req)
 	st := status.FromError(err)
 	out := &protocol.Frame{
 		Type:      protocol.FrameResponse,
@@ -143,6 +144,26 @@ func (s *Server) serveUnaryStream(ctx context.Context, stream transport.Transpor
 		out.Payload = resp.Body
 	}
 	_ = stream.SendFrame(ctx, out)
+}
+
+func (s *Server) invokeUnary(ctx context.Context, req *zrpc.Request) (resp *zrpc.Response, err error) {
+	info := metrics.RPCInfo{Method: req.Method}
+	s.opts.Metrics.OnRPCStart(ctx, info)
+	start := time.Now()
+	defer func() {
+		st := status.FromError(err)
+		s.opts.Metrics.OnRPCFinish(ctx, info, &st, time.Since(start))
+	}()
+
+	handler := s.unaryHandler(req.Method)
+	if handler == nil {
+		return nil, status.Error(status.Unimplemented, fmt.Sprintf("unknown method %q", req.Method))
+	}
+	return handler.HandleUnary(ctx, req)
+}
+
+func (s *Server) invokeUnaryForTest(ctx context.Context, req *zrpc.Request) (*zrpc.Response, error) {
+	return s.invokeUnary(ctx, req)
 }
 
 func (s *Server) unaryHandler(method string) zrpc.UnaryHandler {

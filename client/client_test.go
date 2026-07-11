@@ -10,12 +10,16 @@ import (
 	"github.com/hunyxv/zrpc"
 	"github.com/hunyxv/zrpc/balancer"
 	"github.com/hunyxv/zrpc/codec"
+	"github.com/hunyxv/zrpc/metrics"
 	"github.com/hunyxv/zrpc/protocol"
 	"github.com/hunyxv/zrpc/resolver"
 	"github.com/hunyxv/zrpc/server"
 	"github.com/hunyxv/zrpc/status"
 	"github.com/hunyxv/zrpc/transport"
 	"github.com/hunyxv/zrpc/transport/fake"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 type unaryReq struct {
@@ -94,6 +98,67 @@ func TestClientInvokeHandlerError(t *testing.T) {
 	st := status.FromError(err)
 	if st.Code != status.PermissionDenied || st.Message != "denied" {
 		t.Fatalf("status = %#v", st)
+	}
+}
+
+func TestClientInvokeRecordsMetrics(t *testing.T) {
+	tr := fake.New()
+	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
+	collector := &recordingCollector{}
+	srv := server.New(server.Options{Transport: tr, Endpoint: endpoint, Codec: codec.Msgpack()})
+	srv.HandleUnary("hello.Say", zrpc.UnaryHandlerFunc(func(ctx context.Context, req *zrpc.Request) (*zrpc.Response, error) {
+		return zrpc.NewResponse(unaryResp{Message: "ok"}, codec.Msgpack())
+	}))
+	cancel := serveInBackground(t, srv)
+	defer cancel()
+
+	cli := waitForClient(t, Options{Transport: tr, Target: endpoint, Codec: codec.Msgpack(), Metrics: collector})
+	defer func() { _ = cli.Close(context.Background()) }()
+	if _, err := cli.Invoke(context.Background(), "hello.Say", unaryReq{Name: "zrpc"}); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+
+	if collector.starts != 1 || collector.finishes != 1 {
+		t.Fatalf("metrics starts=%d finishes=%d", collector.starts, collector.finishes)
+	}
+	if collector.lastMethod != "hello.Say" {
+		t.Fatalf("method = %q", collector.lastMethod)
+	}
+	if collector.lastStatus == nil || collector.lastStatus.Code != status.OK {
+		t.Fatalf("status = %#v", collector.lastStatus)
+	}
+}
+
+func TestClientInvokeInjectsTraceContext(t *testing.T) {
+	oldPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(oldPropagator)
+	})
+
+	tr := fake.New()
+	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
+	var traceparent string
+	srv := server.New(server.Options{Transport: tr, Endpoint: endpoint, Codec: codec.Msgpack()})
+	srv.HandleUnary("hello.Trace", zrpc.UnaryHandlerFunc(func(ctx context.Context, req *zrpc.Request) (*zrpc.Response, error) {
+		traceparent = req.Metadata.Get("traceparent")
+		return zrpc.NewResponse(unaryResp{Message: "ok"}, codec.Msgpack())
+	}))
+	cancel := serveInBackground(t, srv)
+	defer cancel()
+
+	cli := waitForClient(t, Options{Transport: tr, Target: endpoint, Codec: codec.Msgpack()})
+	defer func() { _ = cli.Close(context.Background()) }()
+	ctx := oteltrace.ContextWithSpanContext(context.Background(), oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+		TraceID:    oteltrace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     oteltrace.SpanID{17, 18, 19, 20, 21, 22, 23, 24},
+		TraceFlags: oteltrace.FlagsSampled,
+	}))
+	if _, err := cli.Invoke(ctx, "hello.Trace", unaryReq{Name: "zrpc"}); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	if traceparent == "" {
+		t.Fatal("traceparent metadata is empty")
 	}
 }
 
@@ -264,3 +329,25 @@ func waitForClient(t *testing.T, opts Options) *Client {
 	t.Fatalf("New() did not connect: %v", lastErr)
 	return nil
 }
+
+type recordingCollector struct {
+	starts     int
+	finishes   int
+	lastMethod string
+	lastStatus *status.Status
+}
+
+func (c *recordingCollector) OnRPCStart(ctx context.Context, info metrics.RPCInfo) {
+	c.starts++
+	c.lastMethod = info.Method
+}
+
+func (c *recordingCollector) OnRPCFinish(ctx context.Context, info metrics.RPCInfo, st *status.Status, dur time.Duration) {
+	c.finishes++
+	c.lastMethod = info.Method
+	c.lastStatus = st
+}
+
+func (c *recordingCollector) OnStreamEvent(ctx context.Context, event metrics.StreamEvent) {}
+
+func (c *recordingCollector) OnTransportEvent(ctx context.Context, event metrics.TransportEvent) {}
