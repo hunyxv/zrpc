@@ -97,10 +97,16 @@ func (s *Server) serveUnaryStream(ctx context.Context, stream transport.Transpor
 		return
 	}
 	if handler := s.streamHandler(method); handler != nil {
-		rpcStream := zrpc.NewInternalStream(ctx, method, requestFrame.Metadata, s.opts.Codec, stream, s.opts.InitialStreamWindow)
+		rpcStream := zrpc.NewInternalStream(ctx, method, requestFrame.Metadata, s.opts.Codec, stream, s.opts.InitialStreamWindow, protocol.DirectionServerToClient)
 		if err := handler.HandleStream(ctx, rpcStream); err != nil {
 			_ = rpcStream.Reset(ctx, err)
+			return
 		}
+		_ = rpcStream.CloseSend(ctx)
+		return
+	}
+	if requestFrame.Metadata.Get(transport.ModeMetadataKey) == transport.ModeStream {
+		_ = stream.Reset(ctx, &status.Status{Code: status.Unimplemented, Message: fmt.Sprintf("unknown method %q", method)})
 		return
 	}
 

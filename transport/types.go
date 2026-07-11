@@ -13,7 +13,11 @@ type Endpoint struct {
 	Address   string
 }
 
-const MethodMetadataKey = "method"
+const (
+	MethodMetadataKey = "method"
+	ModeMetadataKey   = "rpc-mode"
+	ModeStream        = "stream"
+)
 
 type Transport interface {
 	Dial(ctx context.Context, endpoint Endpoint, opts DialOptions) (Conn, error)

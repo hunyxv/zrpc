@@ -20,18 +20,24 @@ type rpcStream struct {
 	md     metadata.MD
 	codec  codec.Codec
 	ts     transport.TransportStream
+	dir    protocol.Direction
 
 	sendWin *protocol.Window
 	recvWin *protocol.Window
 
-	mu       sync.Mutex
-	sendDone bool
-	recvDone bool
+	mu          sync.Mutex
+	sendDone    bool
+	recvDone    bool
+	terminalErr error
 }
 
-func NewInternalStream(ctx context.Context, method string, md metadata.MD, c codec.Codec, ts transport.TransportStream, window int) Stream {
+func NewInternalStream(ctx context.Context, method string, md metadata.MD, c codec.Codec, ts transport.TransportStream, window int, direction ...protocol.Direction) Stream {
 	if window <= 0 {
 		window = defaultStreamWindow
+	}
+	dir := protocol.DirectionNone
+	if len(direction) > 0 {
+		dir = direction[0]
 	}
 	return &rpcStream{
 		ctx:     ctx,
@@ -39,6 +45,7 @@ func NewInternalStream(ctx context.Context, method string, md metadata.MD, c cod
 		md:      md.Copy(),
 		codec:   c,
 		ts:      ts,
+		dir:     dir,
 		sendWin: protocol.NewWindow(window),
 		recvWin: protocol.NewWindow(window),
 	}
@@ -57,9 +64,6 @@ func (s *rpcStream) Metadata() metadata.MD {
 }
 
 func (s *rpcStream) Send(ctx context.Context, msg any) error {
-	if err := s.ensureCanSend(); err != nil {
-		return err
-	}
 	raw, err := s.codec.Marshal(msg)
 	if err != nil {
 		return err
@@ -67,15 +71,28 @@ func (s *rpcStream) Send(ctx context.Context, msg any) error {
 	if err := s.sendWin.Acquire(ctx, len(raw)); err != nil {
 		return err
 	}
+	defer func() {
+		_ = s.sendWin.Release(len(raw))
+	}()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminalErr != nil {
+		return s.terminalErr
+	}
+	if s.sendDone {
+		return status.Error(status.FailedPrecondition, "stream send side closed")
+	}
 	return s.ts.SendFrame(ctx, &protocol.Frame{
-		Type:     protocol.FrameData,
-		StreamID: s.ts.ID(),
-		Payload:  raw,
+		Type:      protocol.FrameData,
+		StreamID:  s.ts.ID(),
+		Direction: s.dir,
+		Payload:   raw,
 	})
 }
 
 func (s *rpcStream) Recv(ctx context.Context, msg any) error {
-	if err := s.ensureCanRecv(); err != nil {
+	if err := s.recvState(); err != nil {
 		return err
 	}
 	frame, err := s.ts.RecvFrame(ctx)
@@ -84,18 +101,20 @@ func (s *rpcStream) Recv(ctx context.Context, msg any) error {
 	}
 	switch frame.Type {
 	case protocol.FrameData:
-		s.recvWin.Release(len(frame.Payload))
 		return s.codec.Unmarshal(frame.Payload, msg)
+	case protocol.FrameWindowUpdate:
+		_ = s.sendWin.Release(frame.Window)
+		return s.Recv(ctx, msg)
 	case protocol.FrameEnd:
-		s.mu.Lock()
-		s.recvDone = true
-		s.mu.Unlock()
+		s.markRecvDone()
 		return io.EOF
 	case protocol.FrameReset:
+		err := status.Error(status.Unknown, "stream reset")
 		if frame.Status != nil {
-			return status.WithDetails(status.Error(frame.Status.Code, frame.Status.Message), frame.Status.Details...)
+			err = status.WithDetails(status.Error(frame.Status.Code, frame.Status.Message), frame.Status.Details...)
 		}
-		return status.Error(status.Unknown, "stream reset")
+		s.markTerminal(err)
+		return err
 	default:
 		return status.Error(status.Internal, "unexpected stream frame")
 	}
@@ -103,41 +122,74 @@ func (s *rpcStream) Recv(ctx context.Context, msg any) error {
 
 func (s *rpcStream) CloseSend(ctx context.Context) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminalErr != nil {
+		return s.terminalErr
+	}
 	if s.sendDone {
-		s.mu.Unlock()
 		return nil
 	}
 	s.sendDone = true
-	s.mu.Unlock()
-	return s.ts.SendFrame(ctx, &protocol.Frame{Type: protocol.FrameEnd, StreamID: s.ts.ID()})
+	return s.ts.SendFrame(ctx, &protocol.Frame{Type: protocol.FrameEnd, StreamID: s.ts.ID(), Direction: s.dir})
 }
 
 func (s *rpcStream) CloseRecv(ctx context.Context) error {
 	s.mu.Lock()
 	s.recvDone = true
+	closeTransport := s.sendDone
 	s.mu.Unlock()
+	if closeTransport {
+		return s.ts.Close(ctx)
+	}
 	return nil
 }
 
 func (s *rpcStream) Reset(ctx context.Context, err error) error {
 	st := status.FromError(err)
+	terminalErr := status.WithDetails(status.Error(st.Code, st.Message), st.Details...)
+	s.setTerminal(terminalErr)
 	return s.ts.Reset(ctx, &st)
 }
 
-func (s *rpcStream) ensureCanSend() error {
+func (s *rpcStream) recvState() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.sendDone {
-		return status.Error(status.FailedPrecondition, "stream send side closed")
+	if s.terminalErr != nil {
+		return s.terminalErr
 	}
-	return nil
-}
-
-func (s *rpcStream) ensureCanRecv() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.recvDone {
 		return io.EOF
 	}
 	return nil
+}
+
+func (s *rpcStream) markRecvDone() {
+	s.mu.Lock()
+	s.recvDone = true
+	closeTransport := s.sendDone
+	s.mu.Unlock()
+	if closeTransport {
+		_ = s.ts.Close(context.Background())
+	}
+}
+
+func (s *rpcStream) markTerminal(err error) {
+	if err == nil {
+		err = status.Error(status.Unknown, "stream closed")
+	}
+	s.setTerminal(err)
+	_ = s.ts.Close(context.Background())
+}
+
+func (s *rpcStream) setTerminal(err error) {
+	if err == nil {
+		err = status.Error(status.Unknown, "stream closed")
+	}
+	s.mu.Lock()
+	if s.terminalErr == nil {
+		s.terminalErr = err
+	}
+	s.sendDone = true
+	s.recvDone = true
+	s.mu.Unlock()
 }

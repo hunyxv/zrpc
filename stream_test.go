@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/hunyxv/zrpc/client"
 	"github.com/hunyxv/zrpc/codec"
 	"github.com/hunyxv/zrpc/server"
+	"github.com/hunyxv/zrpc/status"
 	"github.com/hunyxv/zrpc/transport"
 	"github.com/hunyxv/zrpc/transport/fake"
 )
@@ -65,6 +67,10 @@ func TestClientStreaming(t *testing.T) {
 	}
 	if result.Count != 2 {
 		t.Fatalf("count = %d, want 2", result.Count)
+	}
+	var end streamResult
+	if err := stream.Recv(context.Background(), &end); err != io.EOF {
+		t.Fatalf("Recv(end) error = %v, want io.EOF", err)
 	}
 }
 
@@ -162,6 +168,140 @@ func TestBidiStreaming(t *testing.T) {
 	var end streamChunk
 	if err := stream.Recv(context.Background(), &end); err != io.EOF {
 		t.Fatalf("Recv(end) error = %v, want io.EOF", err)
+	}
+}
+
+func TestStreamingPayloadExceedingWindowDoesNotDeadlock(t *testing.T) {
+	tr := fake.New()
+	endpoint := transport.Endpoint{Transport: "fake", Address: "stream-window"}
+	srv := server.New(server.Options{Transport: tr, Endpoint: endpoint, Codec: codec.Msgpack(), InitialStreamWindow: 64})
+	srv.HandleStream("upload.Bytes", zrpc.StreamHandlerFunc(func(ctx context.Context, stream zrpc.Stream) error {
+		count := 0
+		for {
+			var chunk streamChunk
+			err := stream.Recv(ctx, &chunk)
+			if err == io.EOF {
+				return stream.Send(ctx, streamResult{Count: count})
+			}
+			if err != nil {
+				return err
+			}
+			count += len(chunk.Value)
+		}
+	}))
+	cancel := serveStreamingInBackground(t, srv)
+	defer cancel()
+
+	cli := waitForStreamingClient(t, client.Options{Transport: tr, Target: endpoint, Codec: codec.Msgpack(), InitialStreamWindow: 64})
+	defer func() { _ = cli.Close(context.Background()) }()
+	stream, err := cli.NewStream(context.Background(), "upload.Bytes")
+	if err != nil {
+		t.Fatalf("NewStream() error = %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := stream.Send(ctx, streamChunk{Value: strings.Repeat("x", 40)})
+		cancel()
+		if err != nil {
+			t.Fatalf("Send(%d) error = %v", i, err)
+		}
+	}
+	if err := stream.CloseSend(context.Background()); err != nil {
+		t.Fatalf("CloseSend() error = %v", err)
+	}
+	var result streamResult
+	if err := stream.Recv(context.Background(), &result); err != nil {
+		t.Fatalf("Recv(result) error = %v", err)
+	}
+	if result.Count != 160 {
+		t.Fatalf("count = %d, want 160", result.Count)
+	}
+	var end streamResult
+	if err := stream.Recv(context.Background(), &end); err != io.EOF {
+		t.Fatalf("Recv(end) error = %v, want io.EOF", err)
+	}
+}
+
+func TestStreamSendAfterCloseSendFails(t *testing.T) {
+	tr := fake.New()
+	endpoint := transport.Endpoint{Transport: "fake", Address: "stream-close"}
+	srv := server.New(server.Options{Transport: tr, Endpoint: endpoint, Codec: codec.Msgpack()})
+	srv.HandleStream("upload.Ignore", zrpc.StreamHandlerFunc(func(ctx context.Context, stream zrpc.Stream) error {
+		for {
+			var chunk streamChunk
+			err := stream.Recv(ctx, &chunk)
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}))
+	cancel := serveStreamingInBackground(t, srv)
+	defer cancel()
+
+	cli := waitForStreamingClient(t, client.Options{Transport: tr, Target: endpoint, Codec: codec.Msgpack()})
+	defer func() { _ = cli.Close(context.Background()) }()
+	stream, err := cli.NewStream(context.Background(), "upload.Ignore")
+	if err != nil {
+		t.Fatalf("NewStream() error = %v", err)
+	}
+	if err := stream.CloseSend(context.Background()); err != nil {
+		t.Fatalf("CloseSend() error = %v", err)
+	}
+	if err := stream.Send(context.Background(), streamChunk{Value: "late"}); err == nil {
+		t.Fatal("Send() after CloseSend error = nil, want non-nil")
+	}
+}
+
+func TestStreamResetIsSticky(t *testing.T) {
+	tr := fake.New()
+	endpoint := transport.Endpoint{Transport: "fake", Address: "stream-reset"}
+	srv := server.New(server.Options{Transport: tr, Endpoint: endpoint, Codec: codec.Msgpack()})
+	srv.HandleStream("stream.Reset", zrpc.StreamHandlerFunc(func(ctx context.Context, stream zrpc.Stream) error {
+		return status.Error(status.PermissionDenied, "denied")
+	}))
+	cancel := serveStreamingInBackground(t, srv)
+	defer cancel()
+
+	cli := waitForStreamingClient(t, client.Options{Transport: tr, Target: endpoint, Codec: codec.Msgpack()})
+	defer func() { _ = cli.Close(context.Background()) }()
+	stream, err := cli.NewStream(context.Background(), "stream.Reset")
+	if err != nil {
+		t.Fatalf("NewStream() error = %v", err)
+	}
+	var out streamChunk
+	err = stream.Recv(context.Background(), &out)
+	if st := status.FromError(err); st.Code != status.PermissionDenied {
+		t.Fatalf("first Recv status = %#v, err=%v", st, err)
+	}
+	err = stream.Recv(context.Background(), &out)
+	if st := status.FromError(err); st.Code != status.PermissionDenied {
+		t.Fatalf("second Recv status = %#v, err=%v", st, err)
+	}
+	if err := stream.Send(context.Background(), streamChunk{Value: "late"}); err == nil {
+		t.Fatal("Send() after reset error = nil, want non-nil")
+	}
+}
+
+func TestUnknownStreamingMethodReturnsUnimplemented(t *testing.T) {
+	tr := fake.New()
+	endpoint := transport.Endpoint{Transport: "fake", Address: "stream-missing"}
+	srv := server.New(server.Options{Transport: tr, Endpoint: endpoint, Codec: codec.Msgpack()})
+	cancel := serveStreamingInBackground(t, srv)
+	defer cancel()
+
+	cli := waitForStreamingClient(t, client.Options{Transport: tr, Target: endpoint, Codec: codec.Msgpack()})
+	defer func() { _ = cli.Close(context.Background()) }()
+	stream, err := cli.NewStream(context.Background(), "missing.Stream")
+	if err != nil {
+		t.Fatalf("NewStream() error = %v", err)
+	}
+	var out streamChunk
+	err = stream.Recv(context.Background(), &out)
+	if st := status.FromError(err); st.Code != status.Unimplemented {
+		t.Fatalf("Recv status = %#v, err=%v", st, err)
 	}
 }
 

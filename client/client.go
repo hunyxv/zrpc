@@ -96,11 +96,12 @@ func (c *Client) Invoke(ctx context.Context, method string, value any) (*zrpc.Re
 
 func (c *Client) NewStream(ctx context.Context, method string) (zrpc.Stream, error) {
 	md := metadata.New()
+	md.Set(transport.ModeMetadataKey, transport.ModeStream)
 	stream, err := c.conn.OpenStream(ctx, method, md)
 	if err != nil {
 		return nil, err
 	}
-	return zrpc.NewInternalStream(ctx, method, md, c.opts.Codec, stream, c.opts.InitialStreamWindow), nil
+	return zrpc.NewInternalStream(ctx, method, md, c.opts.Codec, stream, c.opts.InitialStreamWindow, protocol.DirectionClientToServer), nil
 }
 
 func (c *Client) Close(ctx context.Context) error {
