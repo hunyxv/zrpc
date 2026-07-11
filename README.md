@@ -1,151 +1,111 @@
 # zrpc
 
-## 简介
+zrpc 是一个 Go-to-Go RPC 框架。v1 采用显式的 `Client`、`Server`、`Handler` API，底层核心保持非泛型、稳定、可测试；对外通过 `typed` 包提供泛型 helper，获得更友好的业务侧调用体验。
 
-zrpc 是一款简单易用的 RPC 框架。
+## v1 特性
 
-其支持以下4种请求类型的 RPC 方法：
+- 支持四种调用形态：请求-响应、流式请求、流式响应、双向流式。
+- Transport 抽象，首个实现为 ZeroMQ，后续可扩展 HTTP/2、QUIC、TCP。
+- 默认 codec 为 msgpack，内置 JSON codec 用于调试，保留 `Codec` 接口。
+- 支持 unary/stream interceptor，可插入认证、日志、审计等中间件。
+- 支持 OpenTelemetry trace context 注入和提取。
+- 支持可插拔 metrics collector。
+- 使用 RPC status code 作为错误模型，并支持 details。
+- 内部提供 per-stream backpressure 基础能力。
+- v1 单节点运行，保留 Resolver/Balancer seam，后续可添加集群和服务发现。
 
-1. 请求-响应
-2. 流式请求
-3. 流式响应
-4. 双向流式
+## v1 不包含
 
-## zrpc 依赖 [ZeroMQ](https://zeromq.org/) 库
+- 集群运行时。
+- etcd、consul、zk 服务发现实现。
+- 节点间转发。
+- 跨语言 SDK。
+- IDL/codegen。
+- 自动 retry。
+- ZeroMQ 传输层 TLS/mTLS/CURVE。
+- Prometheus exporter。
 
-安装 zeromq, 在 [release](https://github.com/zeromq/zeromq4-1/releases) 下载并编译安装：
+## 安装要求
 
-```shell
-tar -zxvf zeromq-4.x.x.tar.gz
-cd zeromq-4.x.x
-./configure
-make && make install 
-# 编译后生成的库文件 在目录 /usr/local/lib 下，将其移动到 /usr/lib64 目录
-# 或将路径添加到 /etc/ld.so.conf，然后执行 ldconfig 刷新动态链接库。
+ZeroMQ transport 依赖 `libzmq` 和 CGO。macOS 可使用：
+
+```sh
+brew install zeromq
 ```
 
-## 使用
+Linux 可使用发行版包管理器安装 `libzmq` 和对应开发头文件。
 
-> 注意：下面的简单示例为单服务节点，
-> 多服务节点需要使用 etcd、zk、consul 等服务发现组件。
+## Unary 示例
 
-接口定义：
+```go
+typed.HandleUnary[HelloReq, HelloResp](srv, "hello.Say", handler)
 
-```golang
-type ISayHello interface {
-    SayHello(ctx context.Context, name string) (string, error)
-}
-
-type SayHelloProxy struct {
-    SayHello func(ctx context.Context, name string) (string, error)
-}
-```
-
-服务端：
-```golang
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
-    "os/signal"
-    "syscall"
-
-    "github.com/hunyxv/zrpc"
+resp, err := typed.Invoke[HelloReq, HelloResp](
+	ctx,
+	cli,
+	"hello.Say",
+	&HelloReq{Name: "zrpc"},
 )
-
-var _ ISayHello = (*SayHello)(nil)
-
-type SayHello struct{}
-
-func (s *SayHello) SayHello(ctx context.Context, name string) (string, error) {
-    fmt.Println(name)
-    return fmt.Sprintf("Hello %s!", name), nil
-}
-
-func main() {
-    var i *ISayHello
-    // 注册服务
-    err := zrpc.RegisterServer("sayhello", &SayHello{}, i)
-    if err != nil {
-        panic(err)
-    }
-
-    // 注册多个服务
-    // err = zrpc.RegisterServer("sayhello2", &SayHello{}, i)
-    // if err != nil {
-    //  panic(err)
-    // }
-
-    // 启动服务
-    go zrpc.Run()
-    log.Println("server id: ", zrpc.DefaultNode.NodeID)
-
-    ch := make(chan os.Signal, 1)
-    signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-    <-ch
-    zrpc.Close()
-}
-
-/*
-输出：
-2022/03/19 13:55:36 register:  sayhello/SayHello 0
-2022/03/19 13:55:36 server id:  32a168e5-a749-11ec-9bf9-00163e343ac0
-*/
 ```
 
-客户端调用 RPC 服务：
+完整示例见 [_example/v1_unary](./_example/v1_unary)。
 
-```golang
-package main
+## Client Streaming 示例
 
-import (
-    "context"
-    "log"
-    "time"
+```go
+typed.HandleClientStream[UploadReq, UploadResp](srv, "upload.Count", handler)
 
-    "github.com/hunyxv/zrpc"
-    zrpcCli "github.com/hunyxv/zrpc/client"
-)
+stream, err := typed.NewClientStream[UploadReq, UploadResp](ctx, cli, "upload.Count")
+if err != nil {
+	return err
+}
+if err := stream.Send(ctx, &UploadReq{Name: "first"}); err != nil {
+	return err
+}
+resp, err := stream.CloseAndRecv(ctx)
+```
 
-func main() {
-    serverinfo := zrpc.DefaultNode
-    cli, err := zrpcCli.NewDirectClient(zrpcCli.ServerInfo{
-        ServerName:    serverinfo.ServiceName,
-        NodeID:        "32a168e5-a749-11ec-9bf9-00163e343ac0",   // 注意节点 id 为上面输出的 server id
-        LocalEndpoint: serverinfo.LocalEndpoint,
-        StateEndpoint: serverinfo.StateEndpoint,
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer cli.Close()
+完整示例见 [_example/v1_stream](./_example/v1_stream)。
 
-    time.Sleep(100 * time.Millisecond)
+## 核心 API
 
-    sayHello := new(SayHelloProxy)
-    // 装饰一下
-    err = cli.Decorator("sayhello", sayHello, 3) // 重试次数为 3 次
+业务侧可以直接使用非泛型核心 API：
 
-    // 调用 RPC 方法
-    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-    defer cancel()
-    resp, err := sayHello.SayHello(ctx, "Hunyxv")
-    if err != nil {
-        log.Fatal(err)
-    }
-    log.Println(resp)
+- `client.Client.Invoke`
+- `client.Client.NewStream`
+- `server.Server.HandleUnary`
+- `server.Server.HandleStream`
+- `zrpc.Request`
+- `zrpc.Response`
+- `zrpc.Stream`
+
+`typed` 包只是薄封装，用于减少业务层重复的 encode/decode 代码。
+
+## Transport
+
+v1 内置：
+
+- `transport/fake`：内存 transport，用于测试。
+- `transport/zmq`：ZeroMQ ROUTER/DEALER transport。
+
+ZeroMQ 使用 `transport.Endpoint` 描述地址：
+
+```go
+endpoint := transport.Endpoint{
+	Transport: "zmq",
+	Address:   "tcp://127.0.0.1:19201",
 }
 ```
 
-关于“流式请求”、“流式相应”和链路追踪请看 [example](./_example) 
+## 扩展点
 
+- `codec.Codec`：自定义序列化协议。
+- `interceptor.UnaryInterceptor` 和 `interceptor.StreamInterceptor`：中间件链。
+- `metrics.Collector`：RPC、stream、transport 观测事件。
+- `trace.Inject` / `trace.Extract`：OpenTelemetry metadata propagation。
+- `security.Principal`：认证后身份信息放入 `context.Context`。
+- `resolver.Resolver` / `balancer.Balancer`：后续集群和服务发现扩展点。
 
-待续...
+## 端到端测试
 
-## 友情链接
-
-- [zmq4](https://github.com/pebbe/zmq4)
-- [ants](https://github.com/panjf2000/ants)
+v1 ZeroMQ + typed API 的端到端测试位于 [testdata/v1](./testdata/v1)。
