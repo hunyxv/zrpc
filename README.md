@@ -35,22 +35,70 @@ brew install zeromq
 
 Linux 可使用发行版包管理器安装 `libzmq` 和对应开发头文件。
 
-## Unary 示例
+## 反射语法糖示例
+
+推荐业务侧优先使用 `typed.RegisterService` 注册服务对象。它会按方法签名自动注册四种调用形态。
+
+```go
+type DemoService struct{}
+
+// 请求-响应：demo.Say
+func (DemoService) Say(ctx context.Context, req *DemoReq) (*DemoResp, error) {
+	return &DemoResp{Message: "hello " + req.Name}, nil
+}
+
+// 流式请求：demo.Upload
+func (DemoService) Upload(ctx context.Context, stream *typed.ServerStream[DemoReq, DemoResp]) error {
+	// 通过 stream.Recv 接收多条请求，最后 stream.SendAndClose 返回响应。
+}
+
+// 流式响应：demo.List
+func (DemoService) List(ctx context.Context, req *DemoReq, stream *typed.ServerSender[DemoResp]) error {
+	// 读取一个请求，通过 stream.Send 发送多条响应。
+}
+
+// 双向流式：demo.Chat
+func (DemoService) Chat(ctx context.Context, stream *typed.BidiServerStream[DemoReq, DemoResp]) error {
+	// 通过 stream.Recv / stream.Send 双向收发。
+}
+
+if err := typed.RegisterService(srv, "demo", DemoService{}); err != nil {
+	return err
+}
+```
+
+客户端仍然使用 typed helper 发起调用：
+
+```go
+unaryResp, err := typed.Invoke[DemoReq, DemoResp](ctx, cli, "demo.Say", req)
+
+upload, err := typed.NewClientStream[DemoReq, DemoResp](ctx, cli, "demo.Upload")
+err = upload.Send(ctx, &DemoReq{Name: "first"})
+uploadResp, err := upload.CloseAndRecv(ctx)
+
+list, err := typed.NewServerStream[DemoReq, DemoResp](ctx, cli, "demo.List", req)
+listResp, err := list.Recv(ctx)
+
+chat, err := typed.NewBidiStream[DemoReq, DemoResp](ctx, cli, "demo.Chat")
+err = chat.Send(ctx, &DemoReq{Name: "first"})
+chatResp, err := chat.Recv(ctx)
+```
+
+完整四种调用示例见 [_example/v1_reflect](./_example/v1_reflect)。
+
+## 普通显式 API 示例
+
+普通显式方式只展示请求-响应和一个流式请求场景。请求-响应：
 
 ```go
 typed.HandleUnary[HelloReq, HelloResp](srv, "hello.Say", handler)
 
-resp, err := typed.Invoke[HelloReq, HelloResp](
-	ctx,
-	cli,
-	"hello.Say",
-	&HelloReq{Name: "zrpc"},
-)
+resp, err := typed.Invoke[HelloReq, HelloResp](ctx, cli, "hello.Say", req)
 ```
 
 完整示例见 [_example/v1_unary](./_example/v1_unary)。
 
-## Client Streaming 示例
+流式请求：
 
 ```go
 typed.HandleClientStream[UploadReq, UploadResp](srv, "upload.Count", handler)
