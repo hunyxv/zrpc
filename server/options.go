@@ -19,7 +19,7 @@ type Options struct {
 	// Metrics 接收服务端侧观测事件；为空时使用 noop collector。
 	Metrics metrics.Collector
 
-	// MaxConcurrentStreams 预留为服务端最大并发 stream 数。
+	// MaxConcurrentStreams 是服务端全局最大并发 stream 数；小于等于 0 表示不限制。
 	MaxConcurrentStreams int
 	// MaxMessageSize 预留为最大消息大小限制。
 	MaxMessageSize int

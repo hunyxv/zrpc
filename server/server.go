@@ -23,6 +23,8 @@ type Server struct {
 	unary  map[string]zrpc.UnaryHandler
 	stream map[string]zrpc.StreamHandler
 	conns  map[transport.Conn]struct{}
+
+	streamSlots chan struct{}
 }
 
 // New 创建服务端实例。
@@ -30,11 +32,16 @@ func New(opts Options) *Server {
 	if opts.Metrics == nil {
 		opts.Metrics = metrics.Noop()
 	}
+	var streamSlots chan struct{}
+	if opts.MaxConcurrentStreams > 0 {
+		streamSlots = make(chan struct{}, opts.MaxConcurrentStreams)
+	}
 	return &Server{
-		opts:   opts,
-		unary:  map[string]zrpc.UnaryHandler{},
-		stream: map[string]zrpc.StreamHandler{},
-		conns:  map[transport.Conn]struct{}{},
+		opts:        opts,
+		unary:       map[string]zrpc.UnaryHandler{},
+		stream:      map[string]zrpc.StreamHandler{},
+		conns:       map[transport.Conn]struct{}{},
+		streamSlots: streamSlots,
 	}
 }
 
@@ -90,9 +97,35 @@ func (s *Server) serveConn(ctx context.Context, conn transport.Conn) {
 		if err != nil {
 			return
 		}
+		if !s.tryAcquireStream() {
+			_ = stream.Reset(ctx, &status.Status{Code: status.ResourceExhausted, Message: "too many concurrent streams"})
+			continue
+		}
 		// 每个 transport stream 独立执行业务 handler，避免单个长流阻塞同连接其他 stream。
-		go s.serveUnaryStream(ctx, stream)
+		go func() {
+			defer s.releaseStream()
+			s.serveUnaryStream(ctx, stream)
+		}()
 	}
+}
+
+func (s *Server) tryAcquireStream() bool {
+	if s.streamSlots == nil {
+		return true
+	}
+	select {
+	case s.streamSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) releaseStream() {
+	if s.streamSlots == nil {
+		return
+	}
+	<-s.streamSlots
 }
 
 func (s *Server) serveUnaryStream(ctx context.Context, stream transport.TransportStream) {
