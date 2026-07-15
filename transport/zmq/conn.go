@@ -30,20 +30,29 @@ var (
 )
 
 type owner struct {
+	// socket 只能由 owner.run 所在 goroutine 访问，避免多个 goroutine 并发操作 libzmq socket。
 	socket   *zmq4.Socket
 	context  *zmq4.Context
 	isRouter bool
+	// incoming 是 socket 收到并解码 frame 后的回调。
+	// ROUTER 模式会携带 route，DEALER 模式 route 为空。
 	incoming func(route []byte, frame *protocol.Frame)
 
+	// sendCh 接收其他 goroutine 提交的发送请求。
 	sendCh  chan sendRequest
 	closeCh chan closeRequest
-	done    chan struct{}
+	// done 在 owner.run 完全退出后关闭，调用方可用它判断 socket 生命周期结束。
+	done chan struct{}
 }
 
 type sendRequest struct {
-	ctx    context.Context
-	route  []byte
-	frame  *protocol.Frame
+	// ctx 控制排队和实际发送等待时间。
+	ctx context.Context
+	// route 仅 ROUTER 发送时使用，表示目标 DEALER identity。
+	route []byte
+	// frame 在进入 owner 前已经 clone，避免调用方并发修改。
+	frame *protocol.Frame
+	// result 把 socket 发送结果返回给调用 goroutine。
 	result chan error
 }
 
@@ -75,6 +84,7 @@ func (o *owner) send(ctx context.Context, route []byte, frame *protocol.Frame) e
 		frame:  cloneFrame(frame),
 		result: make(chan error, 1),
 	}
+	// 第一段 select 负责进入 owner 队列；队列满时由 ctx 控制等待上限。
 	select {
 	case o.sendCh <- req:
 	case <-ctx.Done():
@@ -82,6 +92,7 @@ func (o *owner) send(ctx context.Context, route []byte, frame *protocol.Frame) e
 	case <-o.done:
 		return errOwnerClosed
 	}
+	// 第二段 select 等待 owner goroutine 实际执行 socket send 后返回结果。
 	select {
 	case err := <-req.result:
 		return err
@@ -94,6 +105,7 @@ func (o *owner) send(ctx context.Context, route []byte, frame *protocol.Frame) e
 
 func (o *owner) close(ctx context.Context) error {
 	req := closeRequest{result: make(chan error, 1)}
+	// close 也必须交给 owner.run 执行，因为 socket/context 的关闭要和 send/recv 串行。
 	select {
 	case o.closeCh <- req:
 	case <-o.done:
@@ -118,12 +130,15 @@ func (o *owner) run() {
 	var pending []sendRequest
 	for {
 		var closeReq *closeRequest
+		// ZeroMQ socket 不是并发安全对象，所有 socket I/O 必须集中在 owner goroutine。
+		// 每轮先吸收控制请求，再尝试刷出 pending，最后 poll 读事件。
 		pending, closeReq = o.drainControl(pending)
 		if closeReq != nil {
 			o.finish(closeReq, pending)
 			return
 		}
 		pending = o.flushPending(pending)
+		// 当前 poll 使用固定 5ms 间隔；后续可改成可被 sendCh 唤醒的 reactor，降低空闲发送延迟。
 		polled, err := poller.Poll(5 * time.Millisecond)
 		if err != nil && !isAgain(err) {
 			o.failPending(pending, err)
@@ -143,8 +158,10 @@ func (o *owner) drainControl(pending []sendRequest) ([]sendRequest, *closeReques
 	for {
 		select {
 		case req := <-o.sendCh:
+			// 不在这里直接发送，是为了把控制队列 drain 干净后统一按 pending 顺序刷出。
 			pending = append(pending, req)
 		case req := <-o.closeCh:
+			// close 优先级高于继续等待新发送；已有 pending 会在 finish 中统一失败。
 			return pending, &req
 		default:
 			return pending, nil
@@ -156,6 +173,7 @@ func (o *owner) flushPending(pending []sendRequest) []sendRequest {
 	for len(pending) > 0 {
 		req := pending[0]
 		if err := req.ctx.Err(); err != nil {
+			// 请求在排队期间已经超时或取消，直接回传 ctx 错误。
 			req.result <- err
 			pending[0] = sendRequest{}
 			pending = pending[1:]
@@ -163,6 +181,7 @@ func (o *owner) flushPending(pending []sendRequest) []sendRequest {
 		}
 		err := o.sendNow(req)
 		if isAgain(err) {
+			// ZeroMQ 当前不可写，保留 pending 队列，下一轮 poll/flush 再试。
 			return pending
 		}
 		req.result <- err
@@ -181,15 +200,18 @@ func (o *owner) sendNow(req sendRequest) error {
 		if len(req.route) == 0 {
 			return errors.New("zmq: router send route is required")
 		}
+		// ROUTER 发送必须显式带目标 route，ZeroMQ 会按该 identity 路由到对应 DEALER。
 		_, err = o.socket.SendMessageDontwait(req.route, raw)
 		return err
 	}
+	// DEALER 发送不需要 route，服务端 ROUTER 会从 multipart envelope 中拿到发送方 identity。
 	_, err = o.socket.SendMessageDontwait(raw)
 	return err
 }
 
 func (o *owner) recvAvailable() {
 	for {
+		// DONTWAIT 让 owner 一次性读空当前可读数据，直到 EAGAIN。
 		parts, err := o.socket.RecvMessageBytes(zmq4.DONTWAIT)
 		if isAgain(err) {
 			return
@@ -203,6 +225,7 @@ func (o *owner) recvAvailable() {
 		}
 		frame, err := decodeFrame(raw)
 		if err != nil {
+			// 坏 frame 直接丢弃。后续可接入 transport metrics 记录 decode 错误。
 			continue
 		}
 		o.incoming(route, frame)
@@ -214,6 +237,8 @@ func (o *owner) parseMessage(parts [][]byte) ([]byte, []byte, bool) {
 		if len(parts) < 2 {
 			return nil, nil, false
 		}
+		// ROUTER 收到的第一段是 DEALER identity，最后一段是 zrpc frame。
+		// 当前协议不使用空 delimiter，中间段如存在会被忽略。
 		return append([]byte(nil), parts[0]...), parts[len(parts)-1], true
 	}
 	if len(parts) == 0 {
@@ -223,6 +248,7 @@ func (o *owner) parseMessage(parts [][]byte) ([]byte, []byte, bool) {
 }
 
 func (o *owner) finish(req *closeRequest, pending []sendRequest) {
+	// close 到达后不再发送 pending，全部返回 owner closed，避免关闭中的 socket 继续被使用。
 	o.failPending(pending, errOwnerClosed)
 	err := o.socket.Close()
 	if termErr := o.context.Term(); err == nil {
@@ -238,20 +264,29 @@ func (o *owner) failPending(pending []sendRequest, err error) {
 }
 
 type conn struct {
-	id       string
-	local    transport.Endpoint
-	remote   transport.Endpoint
+	// id 是本地逻辑连接 ID；客户端通常与 DEALER identity 相同。
+	id     string
+	local  transport.Endpoint
+	remote transport.Endpoint
+	// listener 仅服务端侧 conn 持有，用于 Close 时从 route map 中移除。
 	listener *listener
-	owner    *owner
-	route    []byte
-	server   bool
+	// owner 是实际 ZeroMQ socket 的拥有者。服务端多个 conn 会共享同一个 ROUTER owner。
+	owner *owner
+	// route 是 ROUTER 回复该连接时使用的 DEALER identity；客户端侧为空。
+	route []byte
+	// server 标识该 conn 是否是服务端 route 上的逻辑连接。
+	server bool
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// incoming 保存已经由 FrameRequest 创建、等待 server.AcceptStream 消费的新 stream。
 	incoming []transport.TransportStream
-	streams  map[string]*stream
-	closed   bool
+	// streams 按 StreamID 保存当前连接上的活跃 stream。
+	streams map[string]*stream
+	closed  bool
+	// draining 表示连接不再接受新 stream，但已有 stream 可继续收尾。
 	draining bool
-	changed  chan struct{}
+	// changed 用于唤醒等待 AcceptStream 的 goroutine。
+	changed chan struct{}
 }
 
 func newConn(id string, local, remote transport.Endpoint, listener *listener, server bool) *conn {
@@ -292,6 +327,8 @@ func (c *conn) OpenStream(ctx context.Context, method string, md metadata.MD) (t
 	}
 	requestMD := md.Copy()
 	requestMD.Set(transport.MethodMetadataKey, method)
+	// OpenStream 先发送 FrameRequest。上层 unary 会随后发送 FrameData；
+	// stream 调用则在 metadata 中额外带 rpc-mode=stream。
 	err := c.owner.send(ctx, c.route, &protocol.Frame{
 		Type:      protocol.FrameRequest,
 		StreamID:  stream.id,
@@ -317,6 +354,7 @@ func (c *conn) AcceptStream(ctx context.Context) (transport.TransportStream, err
 			return nil, errConnectionClosed
 		}
 		if len(c.incoming) > 0 {
+			// FIFO 返回对端新打开的 stream。当前 incoming 尚未接入 RecvQueueSize 上限。
 			stream := c.incoming[0]
 			c.incoming[0] = nil
 			c.incoming = c.incoming[1:]
@@ -330,6 +368,7 @@ func (c *conn) AcceptStream(ctx context.Context) (transport.TransportStream, err
 		changed := c.changed
 		c.mu.Unlock()
 
+		// 等待 routeFrame 创建新 stream、Drain/Close 改变状态，或 ctx 取消。
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -340,12 +379,14 @@ func (c *conn) AcceptStream(ctx context.Context) (transport.TransportStream, err
 
 func (c *conn) Close(ctx context.Context) error {
 	if c.server {
+		// 服务端 conn 只是 ROUTER 上某个 route 的逻辑连接，不能关闭共享 ROUTER socket。
 		c.closeLocal()
 		if c.listener != nil {
 			c.listener.removeConn(c)
 		}
 		return nil
 	}
+	// 客户端 conn 拥有独立 DEALER owner，关闭连接时需要关闭 socket/context。
 	c.closeLocal()
 	if c.owner == nil {
 		return nil
@@ -363,6 +404,7 @@ func (c *conn) Drain(ctx context.Context) error {
 		return errConnectionClosed
 	}
 	c.draining = true
+	// 唤醒正在 AcceptStream 的 goroutine，让它看到 draining 状态并返回错误。
 	c.signalLocked()
 	return nil
 }
@@ -394,6 +436,7 @@ func (c *conn) routeFrame(frame *protocol.Frame) {
 	}
 	if stream := c.streams[frame.StreamID]; stream != nil {
 		c.mu.Unlock()
+		// 已知 stream 的后续 frame 直接入队，等待对应 RecvFrame 消费。
 		stream.enqueueFrame(frame)
 		return
 	}
@@ -401,6 +444,7 @@ func (c *conn) routeFrame(frame *protocol.Frame) {
 		c.mu.Unlock()
 		return
 	}
+	// 首个 request frame 会创建服务端侧 stream，后续 data/response frame 再按 StreamID 路由。
 	stream := newStream(frame.StreamID, c)
 	c.streams[stream.id] = stream
 	c.incoming = append(c.incoming, stream)
@@ -416,6 +460,7 @@ func (c *conn) closeLocal() {
 		return
 	}
 	c.closed = true
+	// closeLocal 会关闭当前 conn 上所有 stream，并唤醒 AcceptStream。
 	streams := make([]*stream, 0, len(c.streams))
 	for _, stream := range c.streams {
 		streams = append(streams, stream)
@@ -431,6 +476,7 @@ func (c *conn) closeLocal() {
 }
 
 func (c *conn) signalLocked() {
+	// 使用 close channel 作为广播信号；替换新 channel 后，下一批等待者会等待新的状态变化。
 	close(c.changed)
 	c.changed = make(chan struct{})
 }
@@ -439,9 +485,12 @@ type stream struct {
 	id   string
 	conn *conn
 
-	mu      sync.Mutex
-	frames  []*protocol.Frame
-	closed  bool
+	mu sync.Mutex
+	// frames 是该 stream 已收到但尚未被 RecvFrame 消费的 frame 队列。
+	// 当前队列无上限，后续需要接入 RecvQueueSize 或 per-stream queue limit。
+	frames []*protocol.Frame
+	closed bool
+	// changed 用于唤醒等待 RecvFrame 的 goroutine。
 	changed chan struct{}
 }
 
@@ -472,6 +521,7 @@ func (s *stream) SendFrame(ctx context.Context, frame *protocol.Frame) error {
 	if closed {
 		return errStreamClosed
 	}
+	// 发送最终委托给 conn.owner，保证 ZeroMQ socket I/O 串行。
 	return s.conn.owner.send(ctx, s.conn.route, frame)
 }
 
@@ -482,6 +532,7 @@ func (s *stream) RecvFrame(ctx context.Context) (*protocol.Frame, error) {
 		}
 		s.mu.Lock()
 		if len(s.frames) > 0 {
+			// 返回 clone，避免调用方修改队列中保存的 frame 或影响其他 goroutine。
 			frame := s.frames[0]
 			s.frames[0] = nil
 			s.frames = s.frames[1:]
@@ -495,6 +546,7 @@ func (s *stream) RecvFrame(ctx context.Context) (*protocol.Frame, error) {
 		changed := s.changed
 		s.mu.Unlock()
 
+		// changed channel 每次状态变化都会被替换，避免条件变量丢唤醒。
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -504,12 +556,14 @@ func (s *stream) RecvFrame(ctx context.Context) (*protocol.Frame, error) {
 }
 
 func (s *stream) Close(ctx context.Context) error {
+	// Close 是本地关闭，不发送 FrameEnd；业务 half-close 由上层 zrpc.Stream.CloseSend 发送 FrameEnd。
 	s.closeLocal()
 	s.conn.removeStream(s.id)
 	return nil
 }
 
 func (s *stream) Reset(ctx context.Context, st *status.Status) error {
+	// Reset 会先通知对端，再关闭并从本地 conn.streams 移除。
 	err := s.SendFrame(ctx, &protocol.Frame{
 		Type:     protocol.FrameReset,
 		StreamID: s.id,
@@ -526,6 +580,7 @@ func (s *stream) enqueueFrame(frame *protocol.Frame) {
 	if s.closed {
 		return
 	}
+	// 入队时 clone frame，隔离 owner goroutine 与业务 goroutine 的内存所有权。
 	s.frames = append(s.frames, cloneFrame(frame))
 	s.signalLocked()
 }
@@ -537,17 +592,20 @@ func (s *stream) closeLocal() {
 		return
 	}
 	s.closed = true
+	// 丢弃未消费 frame，等待中的 RecvFrame 会被唤醒并返回 errStreamClosed。
 	s.frames = nil
 	s.signalLocked()
 	s.mu.Unlock()
 }
 
 func (s *stream) signalLocked() {
+	// 与 conn.changed 一样，close 当前 channel 广播唤醒，再创建下一代 channel。
 	close(s.changed)
 	s.changed = make(chan struct{})
 }
 
 func newSocket(socketType zmq4.Type, opts Options) (*zmq4.Context, *zmq4.Socket, error) {
+	// 每个 socket 使用独立 ZeroMQ context，便于 owner close 时完整释放资源。
 	zctx, err := zmq4.NewContext()
 	if err != nil {
 		return nil, nil, err
@@ -566,6 +624,7 @@ func newSocket(socketType zmq4.Type, opts Options) (*zmq4.Context, *zmq4.Socket,
 }
 
 func applySocketOptions(socket *zmq4.Socket, socketType zmq4.Type, opts Options) error {
+	// HWM 是 libzmq 层队列边界；Go 层 conn/stream 队列还需要单独限制。
 	if err := socket.SetSndhwm(opts.SndHWM); err != nil {
 		return err
 	}
@@ -579,6 +638,7 @@ func applySocketOptions(socket *zmq4.Socket, socketType zmq4.Type, opts Options)
 		return err
 	}
 	if socketType == zmq4.ROUTER && opts.RouterMandatory {
+		// ROUTER_MANDATORY 让不可路由 identity 以错误形式暴露给调用方，而不是静默丢弃。
 		if err := socket.SetRouterMandatory(1); err != nil {
 			return err
 		}
@@ -593,6 +653,7 @@ func encodeFrame(frame *protocol.Frame) ([]byte, error) {
 	if err := frame.Validate(); err != nil {
 		return nil, err
 	}
+	// 编码前 clone，保证 msgpack 编码期间 frame 不会被调用方并发修改。
 	return msgpack.Marshal(cloneFrame(frame))
 }
 
@@ -604,6 +665,7 @@ func decodeFrame(raw []byte) (*protocol.Frame, error) {
 	if err := frame.Validate(); err != nil {
 		return nil, err
 	}
+	// 解码后 clone，统一 frame ownership：调用方拿到的是可独占使用的副本。
 	return cloneFrame(&frame), nil
 }
 

@@ -4,7 +4,7 @@ import "github.com/vmihailenco/msgpack/v5"
 
 type msgpackCodec struct{}
 
-// Msgpack returns a codec backed by github.com/vmihailenco/msgpack/v5.
+// Msgpack 返回基于 github.com/vmihailenco/msgpack/v5 的默认 Codec。
 func Msgpack() Codec {
 	return msgpackCodec{}
 }

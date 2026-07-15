@@ -8,6 +8,7 @@ import (
 	"github.com/hunyxv/zrpc/server"
 )
 
+// HandleUnary 注册泛型请求-响应 handler，并自动完成请求/响应编解码。
 func HandleUnary[Req any, Resp any](srv *server.Server, method string, handler func(context.Context, *Req) (*Resp, error)) {
 	srv.HandleUnary(method, zrpc.UnaryHandlerFunc(func(ctx context.Context, req *zrpc.Request) (*zrpc.Response, error) {
 		var in Req
@@ -22,6 +23,7 @@ func HandleUnary[Req any, Resp any](srv *server.Server, method string, handler f
 	}))
 }
 
+// Invoke 发起泛型请求-响应调用，并将响应解码为 Resp。
 func Invoke[Req any, Resp any](ctx context.Context, cli *client.Client, method string, req *Req) (*Resp, error) {
 	rawResp, err := cli.Invoke(ctx, method, req)
 	if err != nil {

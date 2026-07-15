@@ -16,10 +16,12 @@ import (
 	"github.com/hunyxv/zrpc/typed"
 )
 
+// UploadReq 是流式上传示例的请求体。
 type UploadReq struct {
 	Name string `msgpack:"name"`
 }
 
+// UploadResp 是流式上传示例的响应体。
 type UploadResp struct {
 	Message string `msgpack:"message"`
 }

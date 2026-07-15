@@ -16,11 +16,13 @@ import (
 	"github.com/hunyxv/zrpc/transport"
 )
 
+// Client 是 zrpc 客户端，复用一个 transport 连接发起 unary 和 stream 调用。
 type Client struct {
 	opts Options
 	conn transport.Conn
 }
 
+// New 创建客户端，解析目标 endpoint 后建立底层 transport 连接。
 func New(opts Options) (*Client, error) {
 	if opts.Transport == nil {
 		return nil, errors.New("zrpc/client: transport is required")
@@ -55,6 +57,7 @@ func New(opts Options) (*Client, error) {
 	return &Client{opts: opts, conn: conn}, nil
 }
 
+// Invoke 发起一次请求-响应 RPC，并返回已编码响应。
 func (c *Client) Invoke(ctx context.Context, method string, value any) (resp *zrpc.Response, err error) {
 	info := metrics.RPCInfo{Method: method}
 	c.opts.Metrics.OnRPCStart(ctx, info)
@@ -109,6 +112,7 @@ func (c *Client) Invoke(ctx context.Context, method string, value any) (resp *zr
 	return zrpc.NewResponseBytes(respFrame.Metadata, respFrame.Payload, c.opts.Codec)
 }
 
+// NewStream 打开一个流式 RPC。
 func (c *Client) NewStream(ctx context.Context, method string) (zrpc.Stream, error) {
 	md := metadata.New()
 	md.Set(transport.ModeMetadataKey, transport.ModeStream)
@@ -120,6 +124,7 @@ func (c *Client) NewStream(ctx context.Context, method string) (zrpc.Stream, err
 	return zrpc.NewInternalStream(ctx, method, md, c.opts.Codec, stream, c.opts.InitialStreamWindow, protocol.DirectionClientToServer), nil
 }
 
+// Close 关闭客户端持有的底层连接。
 func (c *Client) Close(ctx context.Context) error {
 	if c == nil || c.conn == nil {
 		return nil

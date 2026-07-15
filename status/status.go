@@ -5,10 +5,13 @@ import (
 	"errors"
 )
 
-// Status describes the outcome of an RPC call.
+// Status 描述一次 RPC 调用的结果。
 type Status struct {
-	Code    Code
+	// Code 是 RPC 状态码。
+	Code Code
+	// Message 是面向调用方的错误消息。
 	Message string
+	// Details 携带可选的错误详情。
 	Details []string
 }
 
@@ -20,7 +23,7 @@ func (e *rpcError) Error() string {
 	return e.status.Message
 }
 
-// Error returns an error carrying an RPC status.
+// Error 返回携带 RPC 状态的 error；OK 会返回 nil。
 func Error(code Code, message string) error {
 	if code == OK {
 		return nil
@@ -33,7 +36,7 @@ func Error(code Code, message string) error {
 	}
 }
 
-// FromError returns the RPC status represented by err.
+// FromError 从 error 中提取 RPC 状态。
 func FromError(err error) Status {
 	if err == nil {
 		return Status{Code: OK}
@@ -63,7 +66,7 @@ func FromError(err error) Status {
 	}
 }
 
-// WithDetails returns err's status with details replaced by a copied slice.
+// WithDetails 返回带有详情副本的状态错误。
 func WithDetails(err error, details ...string) error {
 	st := FromError(err)
 	if st.Code == OK {

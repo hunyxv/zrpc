@@ -13,10 +13,12 @@ import (
 	"github.com/hunyxv/zrpc/typed"
 )
 
+// HelloReq 是 unary 示例请求体。
 type HelloReq struct {
 	Name string `msgpack:"name"`
 }
 
+// HelloResp 是 unary 示例响应体。
 type HelloResp struct {
 	Message string `msgpack:"message"`
 }

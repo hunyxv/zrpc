@@ -17,6 +17,7 @@ var (
 	typedPackagePath = reflect.TypeOf(ServerStream[struct{}, struct{}]{}).PkgPath()
 )
 
+// Register 使用服务结构体的具体类型名作为服务名进行反射注册。
 func Register(srv *server.Server, service any) error {
 	name, err := defaultServiceName(service)
 	if err != nil {
@@ -25,6 +26,13 @@ func Register(srv *server.Server, service any) error {
 	return RegisterService(srv, name, service)
 }
 
+// RegisterService 使用指定服务名反射注册服务对象中符合约定签名的方法。
+//
+// 支持的服务端方法签名：
+//   - func(context.Context, *Req) (*Resp, error)
+//   - func(context.Context, *ServerStream[Req, Resp]) error
+//   - func(context.Context, *Req, *ServerSender[Resp]) error
+//   - func(context.Context, *BidiServerStream[Req, Resp]) error
 func RegisterService(srv *server.Server, serviceName string, service any) error {
 	if srv == nil {
 		return errors.New("zrpc/typed: server is nil")

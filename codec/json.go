@@ -4,7 +4,7 @@ import "encoding/json"
 
 type jsonCodec struct{}
 
-// JSON returns a codec backed by the standard JSON encoder.
+// JSON 返回基于标准库 JSON 的 Codec，主要用于调试和可读性较高的场景。
 func JSON() Codec {
 	return jsonCodec{}
 }

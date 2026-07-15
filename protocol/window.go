@@ -8,6 +8,7 @@ import (
 	"github.com/hunyxv/zrpc/status"
 )
 
+// Window 是用于 stream 流控的并发安全计数窗口。
 type Window struct {
 	mu        sync.Mutex
 	changed   chan struct{}
@@ -15,6 +16,7 @@ type Window struct {
 	limit     int
 }
 
+// NewWindow 创建指定大小的窗口。
 func NewWindow(size int) *Window {
 	if size < 0 {
 		size = 0
@@ -22,12 +24,14 @@ func NewWindow(size int) *Window {
 	return &Window{available: size, limit: size, changed: make(chan struct{})}
 }
 
+// Available 返回当前可用窗口大小。
 func (w *Window) Available() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.available
 }
 
+// Acquire 尝试占用 n 字节窗口，不足时阻塞直到窗口释放或 ctx 取消。
 func (w *Window) Acquire(ctx context.Context, n int) error {
 	if n < 0 {
 		return errors.New("protocol: window acquire size must be non-negative")
@@ -58,6 +62,7 @@ func (w *Window) Acquire(ctx context.Context, n int) error {
 	}
 }
 
+// Release 释放 n 字节窗口并唤醒等待者。
 func (w *Window) Release(n int) error {
 	if n <= 0 {
 		return nil

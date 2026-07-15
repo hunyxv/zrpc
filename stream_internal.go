@@ -12,6 +12,7 @@ import (
 	"github.com/hunyxv/zrpc/transport"
 )
 
+// defaultStreamWindow 是未显式配置时的单 stream 初始窗口大小。
 const defaultStreamWindow = 1024 * 1024
 
 type rpcStream struct {
@@ -31,6 +32,7 @@ type rpcStream struct {
 	terminalErr error
 }
 
+// NewInternalStream 将 transport stream 包装为面向业务消息的 Stream。
 func NewInternalStream(ctx context.Context, method string, md metadata.MD, c codec.Codec, ts transport.TransportStream, window int, direction ...protocol.Direction) Stream {
 	if window <= 0 {
 		window = defaultStreamWindow

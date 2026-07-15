@@ -15,6 +15,7 @@ import (
 	"github.com/hunyxv/zrpc/transport"
 )
 
+// Server 是 zrpc 服务端，负责监听 transport、接受 stream 并分派到 handler。
 type Server struct {
 	opts Options
 
@@ -24,6 +25,7 @@ type Server struct {
 	conns  map[transport.Conn]struct{}
 }
 
+// New 创建服务端实例。
 func New(opts Options) *Server {
 	if opts.Metrics == nil {
 		opts.Metrics = metrics.Noop()
@@ -36,18 +38,21 @@ func New(opts Options) *Server {
 	}
 }
 
+// HandleUnary 注册请求-响应 RPC handler。
 func (s *Server) HandleUnary(method string, handler zrpc.UnaryHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unary[method] = handler
 }
 
+// HandleStream 注册流式 RPC handler。
 func (s *Server) HandleStream(method string, handler zrpc.StreamHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stream[method] = handler
 }
 
+// Serve 启动服务端监听并阻塞处理连接，直到 ctx 取消或 listener 返回错误。
 func (s *Server) Serve(ctx context.Context) error {
 	if s.opts.Transport == nil {
 		return errors.New("zrpc/server: transport is required")
@@ -70,6 +75,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			return err
 		}
 		s.addConn(conn)
+		// 每条连接由独立 goroutine 驱动；后续需要在这里接入并发准入控制。
 		go s.serveConn(ctx, conn)
 	}
 }
@@ -84,6 +90,7 @@ func (s *Server) serveConn(ctx context.Context, conn transport.Conn) {
 		if err != nil {
 			return
 		}
+		// 每个 transport stream 独立执行业务 handler，避免单个长流阻塞同连接其他 stream。
 		go s.serveUnaryStream(ctx, stream)
 	}
 }

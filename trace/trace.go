@@ -28,14 +28,17 @@ func (c carrier) Keys() []string {
 	return keys
 }
 
+// Inject 将当前 OpenTelemetry trace context 注入 metadata。
 func Inject(ctx context.Context, md metadata.MD) {
 	otel.GetTextMapPropagator().Inject(ctx, carrier{md: md})
 }
 
+// Extract 从 metadata 中提取 OpenTelemetry trace context。
 func Extract(ctx context.Context, md metadata.MD) context.Context {
 	return otel.GetTextMapPropagator().Extract(ctx, carrier{md: md})
 }
 
+// Propagator 返回当前全局 OpenTelemetry text map propagator。
 func Propagator() propagation.TextMapPropagator {
 	return otel.GetTextMapPropagator()
 }

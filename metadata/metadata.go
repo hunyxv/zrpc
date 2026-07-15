@@ -2,15 +2,15 @@ package metadata
 
 import "strings"
 
-// MD carries request or response metadata values.
+// MD 保存请求或响应的 metadata 值。
 type MD map[string][]string
 
-// New returns an empty metadata map.
+// New 返回空 metadata map。
 func New() MD {
 	return MD{}
 }
 
-// Set replaces all values for key.
+// Set 替换 key 对应的全部值。
 func (md *MD) Set(key, value string) {
 	m := md.ensure()
 	if m == nil {
@@ -19,7 +19,7 @@ func (md *MD) Set(key, value string) {
 	m[canonicalKey(key)] = []string{value}
 }
 
-// Append adds value for key.
+// Append 为 key 追加一个值。
 func (md *MD) Append(key, value string) {
 	m := md.ensure()
 	if m == nil {
@@ -29,7 +29,7 @@ func (md *MD) Append(key, value string) {
 	m[key] = append(m[key], value)
 }
 
-// Get returns the first value for key.
+// Get 返回 key 对应的第一个值。
 func (md MD) Get(key string) string {
 	values := md.lookup(key)
 	if len(values) == 0 {
@@ -38,12 +38,12 @@ func (md MD) Get(key string) string {
 	return values[0]
 }
 
-// Values returns all values for key.
+// Values 返回 key 对应的所有值副本。
 func (md MD) Values(key string) []string {
 	return cloneValues(md.lookup(key))
 }
 
-// Copy returns a deep copy of md.
+// Copy 返回 metadata 的深拷贝。
 func (md MD) Copy() MD {
 	cp := make(MD, len(md))
 	for key, values := range md {
@@ -52,7 +52,7 @@ func (md MD) Copy() MD {
 	return cp
 }
 
-// Merge combines metadata maps in order.
+// Merge 按参数顺序合并多个 metadata。
 func Merge(mds ...MD) MD {
 	merged := MD{}
 	for _, md := range mds {

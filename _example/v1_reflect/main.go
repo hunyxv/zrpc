@@ -17,20 +17,25 @@ import (
 	"github.com/hunyxv/zrpc/typed"
 )
 
+// DemoReq 是示例请求体。
 type DemoReq struct {
 	Name string `msgpack:"name"`
 }
 
+// DemoResp 是示例响应体。
 type DemoResp struct {
 	Message string `msgpack:"message"`
 }
 
+// DemoService 展示通过反射语法糖注册四种 RPC 形态。
 type DemoService struct{}
 
+// Say 展示请求-响应调用。
 func (DemoService) Say(ctx context.Context, req *DemoReq) (*DemoResp, error) {
 	return &DemoResp{Message: "hello " + req.Name}, nil
 }
 
+// Upload 展示客户端流式请求。
 func (DemoService) Upload(ctx context.Context, stream *typed.ServerStream[DemoReq, DemoResp]) error {
 	count := 0
 	for {
@@ -45,6 +50,7 @@ func (DemoService) Upload(ctx context.Context, stream *typed.ServerStream[DemoRe
 	}
 }
 
+// List 展示服务端流式响应。
 func (DemoService) List(ctx context.Context, req *DemoReq, stream *typed.ServerSender[DemoResp]) error {
 	for i := 0; i < 2; i++ {
 		if err := stream.Send(ctx, &DemoResp{Message: req.Name + "-" + strconv.Itoa(i)}); err != nil {
@@ -54,6 +60,7 @@ func (DemoService) List(ctx context.Context, req *DemoReq, stream *typed.ServerS
 	return nil
 }
 
+// Chat 展示双向流式调用。
 func (DemoService) Chat(ctx context.Context, stream *typed.BidiServerStream[DemoReq, DemoResp]) error {
 	for {
 		req, err := stream.Recv(ctx)

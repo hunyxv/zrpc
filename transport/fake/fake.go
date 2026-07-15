@@ -23,6 +23,7 @@ var (
 	errPeerStreamClosed   = errors.New("fake: peer stream closed")
 )
 
+// Transport 是内存版 transport，用于不依赖网络的测试。
 type Transport struct {
 	mu         sync.Mutex
 	listeners  map[string]*listener
@@ -30,14 +31,17 @@ type Transport struct {
 	nextStream atomic.Uint64
 }
 
+// New 创建新的内存 transport。
 func New() *Transport {
 	return &Transport{listeners: map[string]*listener{}}
 }
 
+// Name 返回 transport 名称。
 func (t *Transport) Name() string {
 	return "fake"
 }
 
+// Listen 注册一个内存 listener。
 func (t *Transport) Listen(endpoint transport.Endpoint, opts transport.ListenOptions) (transport.Listener, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -53,6 +57,7 @@ func (t *Transport) Listen(endpoint transport.Endpoint, opts transport.ListenOpt
 	return l, nil
 }
 
+// Dial 连接到同一 Transport 实例中已注册的 listener。
 func (t *Transport) Dial(ctx context.Context, endpoint transport.Endpoint, opts transport.DialOptions) (transport.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
