@@ -17,6 +17,8 @@ import (
 	"github.com/hunyxv/zrpc/typed"
 )
 
+const serviceName = "demo"
+
 // DemoReq 是示例请求体。
 type DemoReq struct {
 	Name string `msgpack:"name"`
@@ -27,8 +29,33 @@ type DemoResp struct {
 	Message string `msgpack:"message"`
 }
 
+// DemoServiceContract 是服务方 api 包可提供的服务端契约。
+type DemoServiceContract interface {
+	Say(context.Context, *DemoReq) (*DemoResp, error)
+	Upload(context.Context, *typed.ServerStream[DemoReq, DemoResp]) error
+	List(context.Context, *DemoReq, *typed.ServerSender[DemoResp]) error
+	Chat(context.Context, *typed.BidiServerStream[DemoReq, DemoResp]) error
+}
+
+// DemoClient 是服务方 api 包可提供的客户端 proxy struct。
+type DemoClient struct {
+	Say func(context.Context, *DemoReq) (*DemoResp, error)
+
+	Upload func(context.Context) (*typed.ClientStream[DemoReq, DemoResp], error)
+
+	List func(context.Context, *DemoReq) (*typed.ServerStreamingClient[DemoResp], error)
+
+	Chat func(context.Context) (*typed.BidiClientStream[DemoReq, DemoResp], error)
+
+	SayAlias func(context.Context, *DemoReq) (*DemoResp, error) `zrpc:"Say"`
+
+	LocalName string `zrpc:"-"`
+}
+
 // DemoService 展示通过反射语法糖注册四种 RPC 形态。
 type DemoService struct{}
+
+var _ DemoServiceContract = (*DemoService)(nil)
 
 // Say 展示请求-响应调用。
 func (DemoService) Say(ctx context.Context, req *DemoReq) (*DemoResp, error) {
@@ -83,7 +110,7 @@ func main() {
 	endpoint := transport.Endpoint{Transport: "zmq", Address: "tcp://127.0.0.1:19203"}
 	tr := zrpczmq.New(zrpczmq.Options{SndHWM: 100, RcvHWM: 100, Linger: time.Second, RouterMandatory: true, Immediate: true})
 	srv := server.New(server.Options{Transport: tr, Endpoint: endpoint, Codec: codec.Msgpack(), InitialStreamWindow: 1024})
-	if err := typed.RegisterService(srv, "demo", DemoService{}); err != nil {
+	if err := typed.RegisterService(srv, serviceName, DemoService{}); err != nil {
 		panic(err)
 	}
 	serverErr := make(chan error, 1)
@@ -94,22 +121,33 @@ func main() {
 	cli := waitForClient(ctx, endpoint, tr, serverErr)
 	defer func() { _ = cli.Close(context.Background()) }()
 
-	printUnary(ctx, cli)
-	printClientStream(ctx, cli)
-	printServerStream(ctx, cli)
-	printBidiStream(ctx, cli)
+	demo := DemoClient{LocalName: "local-demo"}
+	if err := typed.DecorateClient(cli, serviceName, &demo); err != nil {
+		panic(err)
+	}
+
+	printUnary(ctx, &demo)
+	printClientStream(ctx, &demo)
+	printServerStream(ctx, &demo)
+	printBidiStream(ctx, &demo)
 }
 
-func printUnary(ctx context.Context, cli *client.Client) {
-	resp, err := typed.Invoke[DemoReq, DemoResp](ctx, cli, "demo.Say", &DemoReq{Name: "zrpc"})
+func printUnary(ctx context.Context, demo *DemoClient) {
+	resp, err := demo.Say(ctx, &DemoReq{Name: "zrpc"})
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("unary:", resp.Message)
+
+	aliasResp, err := demo.SayAlias(ctx, &DemoReq{Name: demo.LocalName})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("unary-alias:", aliasResp.Message)
 }
 
-func printClientStream(ctx context.Context, cli *client.Client) {
-	stream, err := typed.NewClientStream[DemoReq, DemoResp](ctx, cli, "demo.Upload")
+func printClientStream(ctx context.Context, demo *DemoClient) {
+	stream, err := demo.Upload(ctx)
 	if err != nil {
 		panic(err)
 	}
@@ -126,8 +164,8 @@ func printClientStream(ctx context.Context, cli *client.Client) {
 	fmt.Println("client-stream:", resp.Message)
 }
 
-func printServerStream(ctx context.Context, cli *client.Client) {
-	stream, err := typed.NewServerStream[DemoReq, DemoResp](ctx, cli, "demo.List", &DemoReq{Name: "item"})
+func printServerStream(ctx context.Context, demo *DemoClient) {
+	stream, err := demo.List(ctx, &DemoReq{Name: "item"})
 	if err != nil {
 		panic(err)
 	}
@@ -145,8 +183,8 @@ func printServerStream(ctx context.Context, cli *client.Client) {
 	fmt.Println("server-stream:", strings.Join(messages, ","))
 }
 
-func printBidiStream(ctx context.Context, cli *client.Client) {
-	stream, err := typed.NewBidiStream[DemoReq, DemoResp](ctx, cli, "demo.Chat")
+func printBidiStream(ctx context.Context, demo *DemoClient) {
+	stream, err := demo.Chat(ctx)
 	if err != nil {
 		panic(err)
 	}

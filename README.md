@@ -38,6 +38,46 @@ Linux 可使用发行版包管理器安装 `libzmq` 和对应开发头文件。
 ## 反射语法糖示例
 
 推荐业务侧优先使用 `typed.RegisterService` 注册服务对象。它会按方法签名自动注册四种调用形态。
+服务方建议提供独立的 `xxxapi` 契约包，只放请求/响应类型、服务名常量、服务端 interface 和客户端 proxy struct。
+
+```go
+package demoapi
+
+const ServiceName = "demo"
+
+type DemoReq struct {
+	Name string
+}
+
+type DemoResp struct {
+	Message string
+}
+
+type DemoService interface {
+	Say(context.Context, *DemoReq) (*DemoResp, error)
+	Upload(context.Context, *typed.ServerStream[DemoReq, DemoResp]) error
+	List(context.Context, *DemoReq, *typed.ServerSender[DemoResp]) error
+	Chat(context.Context, *typed.BidiServerStream[DemoReq, DemoResp]) error
+}
+
+type DemoClient struct {
+	Say func(context.Context, *DemoReq) (*DemoResp, error)
+
+	Upload func(context.Context) (*typed.ClientStream[DemoReq, DemoResp], error)
+
+	List func(context.Context, *DemoReq) (*typed.ServerStreamingClient[DemoResp], error)
+
+	Chat func(context.Context) (*typed.BidiClientStream[DemoReq, DemoResp], error)
+
+	// 字段名是本地别名，真实 RPC 方法名由 tag 指定。
+	SayAlias func(context.Context, *DemoReq) (*DemoResp, error) `zrpc:"Say"`
+
+	// 显式跳过的字段可以由调用方自行初始化。
+	LocalName string `zrpc:"-"`
+}
+```
+
+服务端实现并注册：
 
 ```go
 type DemoService struct{}
@@ -67,19 +107,25 @@ if err := typed.RegisterService(srv, "demo", DemoService{}); err != nil {
 }
 ```
 
-客户端仍然使用 typed helper 发起调用：
+客户端装饰服务方提供的 proxy struct 后直接调用函数字段：
 
 ```go
-unaryResp, err := typed.Invoke[DemoReq, DemoResp](ctx, cli, "demo.Say", req)
+demo := demoapi.DemoClient{LocalName: "local-demo"}
+if err := typed.DecorateClient(cli, demoapi.ServiceName, &demo); err != nil {
+	return err
+}
 
-upload, err := typed.NewClientStream[DemoReq, DemoResp](ctx, cli, "demo.Upload")
+unaryResp, err := demo.Say(ctx, req)
+aliasResp, err := demo.SayAlias(ctx, req)
+
+upload, err := demo.Upload(ctx)
 err = upload.Send(ctx, &DemoReq{Name: "first"})
 uploadResp, err := upload.CloseAndRecv(ctx)
 
-list, err := typed.NewServerStream[DemoReq, DemoResp](ctx, cli, "demo.List", req)
+list, err := demo.List(ctx, req)
 listResp, err := list.Recv(ctx)
 
-chat, err := typed.NewBidiStream[DemoReq, DemoResp](ctx, cli, "demo.Chat")
+chat, err := demo.Chat(ctx)
 err = chat.Send(ctx, &DemoReq{Name: "first"})
 chatResp, err := chat.Recv(ctx)
 ```
