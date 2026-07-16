@@ -54,6 +54,103 @@ func TestFakeTransportOpenAcceptStream(t *testing.T) {
 	}
 }
 
+func TestFakeRecvQueueSizeDefaultsForNonPositiveValues(t *testing.T) {
+	for _, size := range []int{0, -1} {
+		tr := New(Options{RecvQueueSize: size})
+		if tr.opts.RecvQueueSize != defaultRecvQueueSize {
+			t.Fatalf("RecvQueueSize for %d = %d, want %d", size, tr.opts.RecvQueueSize, defaultRecvQueueSize)
+		}
+	}
+}
+
+func TestFakeRecvQueueLimitRejectsIncomingStreams(t *testing.T) {
+	tr := New(Options{RecvQueueSize: 1})
+	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
+	listener, err := tr.Listen(endpoint, transport.ListenOptions{})
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	clientConn, err := tr.Dial(context.Background(), endpoint, transport.DialOptions{})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	if _, err := listener.Accept(context.Background()); err != nil {
+		t.Fatalf("Accept() error = %v", err)
+	}
+
+	if _, err := clientConn.OpenStream(context.Background(), "svc.First", nil); err != nil {
+		t.Fatalf("first OpenStream() error = %v", err)
+	}
+	second, err := clientConn.OpenStream(context.Background(), "svc.Second", nil)
+	if err != nil {
+		t.Fatalf("second OpenStream() error = %v", err)
+	}
+	frame, err := second.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("second RecvFrame() error = %v", err)
+	}
+	if frame.Type != protocol.FrameReset {
+		t.Fatalf("frame.Type = %v, want %v", frame.Type, protocol.FrameReset)
+	}
+	if frame.Status == nil || frame.Status.Code != status.ResourceExhausted {
+		t.Fatalf("frame.Status = %#v, want ResourceExhausted", frame.Status)
+	}
+}
+
+func TestFakeRecvQueueLimitResetsStreamWhenFrameQueueFull(t *testing.T) {
+	clientStream, serverStream := newLimitedStreamPair(t, 1)
+	if err := clientStream.SendFrame(context.Background(), &protocol.Frame{Type: protocol.FrameData, StreamID: clientStream.ID(), Payload: []byte("first")}); err != nil {
+		t.Fatalf("first SendFrame() error = %v", err)
+	}
+	if err := clientStream.SendFrame(context.Background(), &protocol.Frame{Type: protocol.FrameData, StreamID: clientStream.ID(), Payload: []byte("second")}); err != nil {
+		t.Fatalf("second SendFrame() error = %v", err)
+	}
+
+	frame, err := clientStream.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("client RecvFrame() error = %v", err)
+	}
+	if frame.Type != protocol.FrameReset {
+		t.Fatalf("frame.Type = %v, want %v", frame.Type, protocol.FrameReset)
+	}
+	if frame.Status == nil || frame.Status.Code != status.ResourceExhausted {
+		t.Fatalf("frame.Status = %#v, want ResourceExhausted", frame.Status)
+	}
+
+	got, err := serverStream.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("server RecvFrame() error = %v", err)
+	}
+	if got.Type != protocol.FrameData || string(got.Payload) != "first" {
+		t.Fatalf("server frame = %#v, want first data frame", got)
+	}
+}
+
+func TestFakeRecvQueueLimitAllowsFrameEndWhenQueueFull(t *testing.T) {
+	clientStream, serverStream := newLimitedStreamPair(t, 1)
+	if err := clientStream.SendFrame(context.Background(), &protocol.Frame{Type: protocol.FrameData, StreamID: clientStream.ID(), Payload: []byte("first")}); err != nil {
+		t.Fatalf("SendFrame(data) error = %v", err)
+	}
+	if err := clientStream.SendFrame(context.Background(), &protocol.Frame{Type: protocol.FrameEnd, StreamID: clientStream.ID()}); err != nil {
+		t.Fatalf("SendFrame(end) error = %v", err)
+	}
+
+	frame, err := serverStream.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("RecvFrame(data) error = %v", err)
+	}
+	if frame.Type != protocol.FrameData {
+		t.Fatalf("frame.Type = %v, want %v", frame.Type, protocol.FrameData)
+	}
+	frame, err = serverStream.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("RecvFrame(end) error = %v", err)
+	}
+	if frame.Type != protocol.FrameEnd {
+		t.Fatalf("frame.Type = %v, want %v", frame.Type, protocol.FrameEnd)
+	}
+}
+
 func TestFakeOpenStreamSendsRequestFrame(t *testing.T) {
 	tr := New()
 	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
@@ -492,7 +589,16 @@ func activeStreams(transportConn transport.Conn) int {
 
 func newStreamPair(t *testing.T) (transport.TransportStream, transport.TransportStream) {
 	t.Helper()
-	tr := New()
+	return newStreamPairWithTransport(t, New())
+}
+
+func newLimitedStreamPair(t *testing.T, recvQueueSize int) (transport.TransportStream, transport.TransportStream) {
+	t.Helper()
+	return newStreamPairWithTransport(t, New(Options{RecvQueueSize: recvQueueSize}))
+}
+
+func newStreamPairWithTransport(t *testing.T, tr *Transport) (transport.TransportStream, transport.TransportStream) {
+	t.Helper()
 	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
 	listener, err := tr.Listen(endpoint, transport.ListenOptions{})
 	if err != nil {

@@ -161,6 +161,12 @@ resp, err := stream.CloseAndRecv(ctx)
 
 完整示例见 [_example/v1_stream](./_example/v1_stream)。
 
+## Stream 背压示例
+
+`InitialStreamWindow` 按编码后的 payload bytes 限制每条 stream 的在途数据量。接收方业务 `Recv` 消费一条 data frame 后，内部会发送 `FrameWindowUpdate(delta=len(payload))`；发送方后台 pump 会处理该控制帧并释放发送窗口。
+
+[_example/v1_window](./_example/v1_window) 演示了慢消费者场景：客户端第二次 `Send` 会先因窗口不足超时；服务端消费第一条消息后，客户端不主动 `Recv` 也能继续 `Send`，证明后台 pump 已处理 window update。
+
 ## 核心 API
 
 业务侧可以直接使用非泛型核心 API：

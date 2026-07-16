@@ -23,17 +23,38 @@ var (
 	errPeerStreamClosed   = errors.New("fake: peer stream closed")
 )
 
+const defaultRecvQueueSize = 1024
+
+// Options 描述 fake transport 的测试运行参数。
+type Options struct {
+	// RecvQueueSize 是单连接 incoming stream 队列和单 stream frame 队列的最大 frame 数。
+	// 小于等于 0 时使用默认值 1024。
+	RecvQueueSize int
+}
+
+func defaultOptions(opts Options) Options {
+	if opts.RecvQueueSize <= 0 {
+		opts.RecvQueueSize = defaultRecvQueueSize
+	}
+	return opts
+}
+
 // Transport 是内存版 transport，用于不依赖网络的测试。
 type Transport struct {
 	mu         sync.Mutex
 	listeners  map[string]*listener
 	nextConn   atomic.Uint64
 	nextStream atomic.Uint64
+	opts       Options
 }
 
 // New 创建新的内存 transport。
-func New() *Transport {
-	return &Transport{listeners: map[string]*listener{}}
+func New(opts ...Options) *Transport {
+	options := Options{}
+	if len(opts) > 0 {
+		options = opts[0]
+	}
+	return &Transport{listeners: map[string]*listener{}, opts: defaultOptions(options)}
 }
 
 // Name 返回 transport 名称。
@@ -353,6 +374,13 @@ func (c *conn) enqueueStream(ctx context.Context, stream *stream) error {
 	if c.draining {
 		return errConnectionDraining
 	}
+	if len(c.incoming) >= c.transport.opts.RecvQueueSize {
+		if stream.peer != nil {
+			_ = stream.peer.enqueueTerminal(ctx, receiveQueueFullReset(stream.id))
+		}
+		stream.closeLocal(true)
+		return nil
+	}
 	c.incoming = append(c.incoming, stream)
 	stream.owner = c
 	c.streams[stream] = struct{}{}
@@ -498,12 +526,28 @@ func (s *stream) enqueueFrame(ctx context.Context, frame *protocol.Frame) error 
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return errPeerStreamClosed
+	}
+	if !canBypassRecvQueue(cloned) && len(s.frames) >= s.recvQueueSize() {
+		s.closed = true
+		owner := s.owner
+		peer := s.peer
+		s.owner = nil
+		s.signalLocked()
+		s.mu.Unlock()
+		if owner != nil {
+			owner.removeStream(s)
+		}
+		if peer != nil {
+			_ = peer.enqueueTerminal(ctx, receiveQueueFullReset(s.id))
+		}
+		return nil
 	}
 	s.frames = append(s.frames, cloned)
 	s.signalLocked()
+	s.mu.Unlock()
 	return nil
 }
 
@@ -531,6 +575,25 @@ func (s *stream) enqueueTerminal(ctx context.Context, frame *protocol.Frame) err
 		owner.removeStream(s)
 	}
 	return nil
+}
+
+func (s *stream) recvQueueSize() int {
+	if s.owner == nil || s.owner.transport == nil {
+		return defaultRecvQueueSize
+	}
+	return s.owner.transport.opts.RecvQueueSize
+}
+
+func canBypassRecvQueue(frame *protocol.Frame) bool {
+	return frame != nil && (frame.Type == protocol.FrameEnd || frame.Type == protocol.FrameReset)
+}
+
+func receiveQueueFullReset(streamID string) *protocol.Frame {
+	return &protocol.Frame{
+		Type:     protocol.FrameReset,
+		StreamID: streamID,
+		Status:   &status.Status{Code: status.ResourceExhausted, Message: "transport receive queue full"},
+	}
 }
 
 func (s *stream) closeBoth() {

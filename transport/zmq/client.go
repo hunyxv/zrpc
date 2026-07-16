@@ -75,11 +75,11 @@ func newClientConn(ctx context.Context, endpoint transport.Endpoint, opts Option
 	}
 	// local endpoint 使用 identity 作为地址，便于日志/追踪中定位本地逻辑连接。
 	// remote endpoint 保留调用方传入的 ZeroMQ 地址，例如 tcp://127.0.0.1:5555。
-	conn := newConn(id, transport.Endpoint{Transport: "zmq", Address: id}, endpoint, nil, false)
+	conn := newConn(id, transport.Endpoint{Transport: "zmq", Address: id}, endpoint, nil, false, opts.RecvQueueSize)
 	// owner 拿到 socket 的独占访问权。收到服务端 frame 后直接路由到该 conn；
 	// 客户端 DEALER 不需要 route，所以回调中的 route 参数会被忽略。
-	owner := newOwner(zctx, socket, false, opts, func(route []byte, frame *protocol.Frame) {
-		conn.routeFrame(frame)
+	owner := newOwner(zctx, socket, false, opts, func(route []byte, frame *protocol.Frame) []routeFrameAction {
+		return conn.routeFrame(frame)
 	})
 	conn.owner = owner
 

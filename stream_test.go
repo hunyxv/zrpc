@@ -222,6 +222,135 @@ func TestStreamingPayloadExceedingWindowDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+func TestStreamSendWaitsForPeerConsumptionWithoutClientRecv(t *testing.T) {
+	tr := fake.New()
+	c := codec.Msgpack()
+	const window = 96
+	chunk := chunkLargerThanHalfWindow(t, c, window)
+	allowRecv := make(chan struct{})
+	consumed := make(chan struct{})
+	handlerDone := make(chan struct{})
+	endpoint := transport.Endpoint{Transport: "fake", Address: "stream-window-pump"}
+	srv := server.New(server.Options{Transport: tr, Endpoint: endpoint, Codec: c, InitialStreamWindow: window})
+	srv.HandleStream("upload.Backpressure", zrpc.StreamHandlerFunc(func(ctx context.Context, stream zrpc.Stream) error {
+		defer close(handlerDone)
+		select {
+		case <-allowRecv:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		var first streamChunk
+		if err := stream.Recv(ctx, &first); err != nil {
+			return err
+		}
+		close(consumed)
+		for {
+			var next streamChunk
+			err := stream.Recv(ctx, &next)
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}))
+	cancel := serveStreamingInBackground(t, srv)
+	defer cancel()
+
+	cli := waitForStreamingClient(t, client.Options{Transport: tr, Target: endpoint, Codec: c, InitialStreamWindow: window})
+	defer func() { _ = cli.Close(context.Background()) }()
+	stream, err := cli.NewStream(context.Background(), "upload.Backpressure")
+	if err != nil {
+		t.Fatalf("NewStream() error = %v", err)
+	}
+	if err := stream.Send(context.Background(), chunk); err != nil {
+		t.Fatalf("first Send() error = %v", err)
+	}
+
+	ctx, cancelSend := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	err = stream.Send(ctx, chunk)
+	cancelSend()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second Send() before peer consumption error = %v, want deadline exceeded", err)
+	}
+
+	close(allowRecv)
+	select {
+	case <-consumed:
+	case <-time.After(time.Second):
+		t.Fatal("server did not consume the first chunk")
+	}
+
+	ctx, cancelSend = context.WithTimeout(context.Background(), time.Second)
+	err = stream.Send(ctx, chunk)
+	cancelSend()
+	if err != nil {
+		t.Fatalf("second Send() after peer consumption error = %v", err)
+	}
+	if err := stream.CloseSend(context.Background()); err != nil {
+		t.Fatalf("CloseSend() error = %v", err)
+	}
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not finish")
+	}
+}
+
+func TestStreamResetWakesSendWaitingForWindow(t *testing.T) {
+	tr := fake.New()
+	c := codec.Msgpack()
+	const window = 96
+	chunk := chunkLargerThanHalfWindow(t, c, window)
+	resetNow := make(chan struct{})
+	endpoint := transport.Endpoint{Transport: "fake", Address: "stream-window-reset"}
+	srv := server.New(server.Options{Transport: tr, Endpoint: endpoint, Codec: c, InitialStreamWindow: window})
+	srv.HandleStream("upload.ResetWhileSending", zrpc.StreamHandlerFunc(func(ctx context.Context, stream zrpc.Stream) error {
+		select {
+		case <-resetNow:
+			return status.Error(status.PermissionDenied, "denied")
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}))
+	cancel := serveStreamingInBackground(t, srv)
+	defer cancel()
+
+	cli := waitForStreamingClient(t, client.Options{Transport: tr, Target: endpoint, Codec: c, InitialStreamWindow: window})
+	defer func() { _ = cli.Close(context.Background()) }()
+	stream, err := cli.NewStream(context.Background(), "upload.ResetWhileSending")
+	if err != nil {
+		t.Fatalf("NewStream() error = %v", err)
+	}
+	if err := stream.Send(context.Background(), chunk); err != nil {
+		t.Fatalf("first Send() error = %v", err)
+	}
+
+	sendErr := make(chan error, 1)
+	ctx, cancelSend := context.WithTimeout(context.Background(), time.Second)
+	defer cancelSend()
+	go func() {
+		sendErr <- stream.Send(ctx, chunk)
+	}()
+
+	select {
+	case err := <-sendErr:
+		t.Fatalf("second Send() returned before reset: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(resetNow)
+	select {
+	case err := <-sendErr:
+		if st := status.FromError(err); st.Code != status.PermissionDenied {
+			t.Fatalf("second Send() status = %#v, err=%v, want PermissionDenied", st, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second Send() did not return after stream reset")
+	}
+}
+
 func TestStreamSendAfterCloseSendFails(t *testing.T) {
 	tr := fake.New()
 	endpoint := transport.Endpoint{Transport: "fake", Address: "stream-close"}
@@ -340,4 +469,20 @@ func waitForStreamingClient(t *testing.T, opts client.Options) *client.Client {
 	}
 	t.Fatalf("client.New() did not connect: %v", lastErr)
 	return nil
+}
+
+func chunkLargerThanHalfWindow(t *testing.T, c codec.Codec, window int) streamChunk {
+	t.Helper()
+	for n := window; n > 0; n-- {
+		chunk := streamChunk{Value: strings.Repeat("x", n)}
+		raw, err := c.Marshal(chunk)
+		if err != nil {
+			t.Fatalf("Marshal() error = %v", err)
+		}
+		if len(raw) <= window && len(raw) > window/2 {
+			return chunk
+		}
+	}
+	t.Fatalf("could not build chunk with encoded size in (%d, %d]", window/2, window)
+	return streamChunk{}
 }

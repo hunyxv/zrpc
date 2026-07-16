@@ -54,6 +54,38 @@ func TestWindowAcquireBlocksUntilRelease(t *testing.T) {
 	}
 }
 
+func TestWindowReleaseAllWakesWaiters(t *testing.T) {
+	window := NewWindow(5)
+	if err := window.Acquire(context.Background(), 5); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- window.Acquire(context.Background(), 3)
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Acquire() returned before ReleaseAll(): %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	window.ReleaseAll()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Acquire() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Acquire() did not return after ReleaseAll()")
+	}
+	if got, want := window.Available(), 2; got != want {
+		t.Fatalf("Available() after waiter Acquire() = %d, want %d", got, want)
+	}
+}
+
 func TestWindowAcquireContextCanceled(t *testing.T) {
 	window := NewWindow(1)
 	if err := window.Acquire(context.Background(), 1); err != nil {

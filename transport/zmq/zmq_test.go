@@ -14,6 +14,7 @@ import (
 	"github.com/hunyxv/zrpc/metadata"
 	"github.com/hunyxv/zrpc/protocol"
 	"github.com/hunyxv/zrpc/server"
+	"github.com/hunyxv/zrpc/status"
 	"github.com/hunyxv/zrpc/transport"
 )
 
@@ -67,6 +68,15 @@ func TestZMQTransportFrameRoundTrip(t *testing.T) {
 	}
 }
 
+func TestZMQRecvQueueSizeDefaultsForNonPositiveValues(t *testing.T) {
+	for _, size := range []int{0, -1} {
+		opts := defaultOptions(Options{RecvQueueSize: size})
+		if opts.RecvQueueSize != 1024 {
+			t.Fatalf("RecvQueueSize for %d = %d, want 1024", size, opts.RecvQueueSize)
+		}
+	}
+}
+
 func TestZMQOpenStreamSendsRequestFrame(t *testing.T) {
 	endpoint := testEndpoint(t)
 	tr := New(Options{Linger: 100 * time.Millisecond, RouterMandatory: true, Immediate: true})
@@ -115,6 +125,106 @@ func TestZMQOpenStreamSendsRequestFrame(t *testing.T) {
 	}
 	if got := requestFrame.Metadata.Get("trace-id"); got != "trace-1" {
 		t.Fatalf("trace metadata = %q", got)
+	}
+}
+
+func TestZMQRecvQueueLimitRejectsIncomingStreams(t *testing.T) {
+	endpoint := testEndpoint(t)
+	tr := New(Options{RecvQueueSize: 1, Linger: 100 * time.Millisecond, RouterMandatory: true, Immediate: true})
+	listener, err := tr.Listen(endpoint, transport.ListenOptions{})
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer func() { _ = listener.Close(context.Background()) }()
+	serverConnCh := make(chan transport.Conn, 1)
+	go func() {
+		conn, err := listener.Accept(context.Background())
+		if err == nil {
+			serverConnCh <- conn
+		}
+	}()
+	clientConn, err := tr.Dial(context.Background(), endpoint, transport.DialOptions{})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer func() { _ = clientConn.Close(context.Background()) }()
+	serverConn := waitForServerConn(t, serverConnCh)
+	defer func() { _ = serverConn.Close(context.Background()) }()
+
+	if _, err := clientConn.OpenStream(context.Background(), "hello.First", nil); err != nil {
+		t.Fatalf("first OpenStream() error = %v", err)
+	}
+	waitForIncomingStreams(t, serverConn, 1)
+
+	second, err := clientConn.OpenStream(context.Background(), "hello.Second", nil)
+	if err != nil {
+		t.Fatalf("second OpenStream() error = %v", err)
+	}
+	frame, err := recvFrameWithTimeout(t, second)
+	if err != nil {
+		t.Fatalf("second RecvFrame() error = %v", err)
+	}
+	if frame.Type != protocol.FrameReset {
+		t.Fatalf("frame.Type = %v, want %v", frame.Type, protocol.FrameReset)
+	}
+	if frame.Status == nil || frame.Status.Code != status.ResourceExhausted {
+		t.Fatalf("frame.Status = %#v, want ResourceExhausted", frame.Status)
+	}
+}
+
+func TestZMQRecvQueueLimitResetsStreamWhenFrameQueueFull(t *testing.T) {
+	clientStream, serverStream := newLimitedStreamPair(t, 1)
+	if err := clientStream.SendFrame(context.Background(), &protocol.Frame{Type: protocol.FrameData, StreamID: clientStream.ID(), Payload: []byte("first")}); err != nil {
+		t.Fatalf("first SendFrame() error = %v", err)
+	}
+	waitForQueuedFrames(t, serverStream, 1)
+	if err := clientStream.SendFrame(context.Background(), &protocol.Frame{Type: protocol.FrameData, StreamID: clientStream.ID(), Payload: []byte("second")}); err != nil {
+		t.Fatalf("second SendFrame() error = %v", err)
+	}
+
+	frame, err := recvFrameWithTimeout(t, clientStream)
+	if err != nil {
+		t.Fatalf("client RecvFrame() error = %v", err)
+	}
+	if frame.Type != protocol.FrameReset {
+		t.Fatalf("frame.Type = %v, want %v", frame.Type, protocol.FrameReset)
+	}
+	if frame.Status == nil || frame.Status.Code != status.ResourceExhausted {
+		t.Fatalf("frame.Status = %#v, want ResourceExhausted", frame.Status)
+	}
+
+	got, err := serverStream.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("server RecvFrame() error = %v", err)
+	}
+	if got.Type != protocol.FrameData || string(got.Payload) != "first" {
+		t.Fatalf("server frame = %#v, want first data frame", got)
+	}
+}
+
+func TestZMQRecvQueueLimitAllowsFrameEndWhenQueueFull(t *testing.T) {
+	clientStream, serverStream := newLimitedStreamPair(t, 1)
+	if err := clientStream.SendFrame(context.Background(), &protocol.Frame{Type: protocol.FrameData, StreamID: clientStream.ID(), Payload: []byte("first")}); err != nil {
+		t.Fatalf("SendFrame(data) error = %v", err)
+	}
+	waitForQueuedFrames(t, serverStream, 1)
+	if err := clientStream.SendFrame(context.Background(), &protocol.Frame{Type: protocol.FrameEnd, StreamID: clientStream.ID()}); err != nil {
+		t.Fatalf("SendFrame(end) error = %v", err)
+	}
+
+	frame, err := serverStream.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("RecvFrame(data) error = %v", err)
+	}
+	if frame.Type != protocol.FrameData {
+		t.Fatalf("frame.Type = %v, want %v", frame.Type, protocol.FrameData)
+	}
+	frame, err = serverStream.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("RecvFrame(end) error = %v", err)
+	}
+	if frame.Type != protocol.FrameEnd {
+		t.Fatalf("frame.Type = %v, want %v", frame.Type, protocol.FrameEnd)
 	}
 }
 
@@ -249,4 +359,80 @@ func waitForServerConn(t *testing.T, ch <-chan transport.Conn) transport.Conn {
 		t.Fatal("listener.Accept() did not return a server connection")
 		return nil
 	}
+}
+
+func newLimitedStreamPair(t *testing.T, recvQueueSize int) (transport.TransportStream, transport.TransportStream) {
+	t.Helper()
+	endpoint := testEndpoint(t)
+	tr := New(Options{RecvQueueSize: recvQueueSize, Linger: 100 * time.Millisecond, RouterMandatory: true, Immediate: true})
+	listener, err := tr.Listen(endpoint, transport.ListenOptions{})
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close(context.Background()) })
+	serverConnCh := make(chan transport.Conn, 1)
+	go func() {
+		conn, err := listener.Accept(context.Background())
+		if err == nil {
+			serverConnCh <- conn
+		}
+	}()
+	clientConn, err := tr.Dial(context.Background(), endpoint, transport.DialOptions{})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	t.Cleanup(func() { _ = clientConn.Close(context.Background()) })
+	serverConn := waitForServerConn(t, serverConnCh)
+	t.Cleanup(func() { _ = serverConn.Close(context.Background()) })
+	clientStream, err := clientConn.OpenStream(context.Background(), "hello.Stream", nil)
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	serverStream, err := serverConn.AcceptStream(context.Background())
+	if err != nil {
+		t.Fatalf("AcceptStream() error = %v", err)
+	}
+	if _, err := serverStream.RecvFrame(context.Background()); err != nil {
+		t.Fatalf("RecvFrame() request error = %v", err)
+	}
+	return clientStream, serverStream
+}
+
+func waitForIncomingStreams(t *testing.T, transportConn transport.Conn, want int) {
+	t.Helper()
+	conn := transportConn.(*conn)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		conn.mu.Lock()
+		got := len(conn.incoming)
+		conn.mu.Unlock()
+		if got >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("incoming streams did not reach %d", want)
+}
+
+func waitForQueuedFrames(t *testing.T, transportStream transport.TransportStream, want int) {
+	t.Helper()
+	stream := transportStream.(*stream)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		stream.mu.Lock()
+		got := len(stream.frames)
+		stream.mu.Unlock()
+		if got >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("queued frames did not reach %d", want)
+}
+
+func recvFrameWithTimeout(t *testing.T, stream transport.TransportStream) (*protocol.Frame, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return stream.RecvFrame(ctx)
 }

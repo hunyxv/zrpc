@@ -79,6 +79,19 @@ func (w *Window) Release(n int) error {
 	return nil
 }
 
+// ReleaseAll 将窗口恢复到上限并唤醒所有等待者。
+func (w *Window) ReleaseAll() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.initLocked()
+	if w.available == w.limit {
+		return
+	}
+	w.available = w.limit
+	close(w.changed)
+	w.changed = make(chan struct{})
+}
+
 func (w *Window) initLocked() {
 	if w.changed == nil {
 		w.changed = make(chan struct{})

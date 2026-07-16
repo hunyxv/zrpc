@@ -14,6 +14,8 @@ import (
 type listener struct {
 	// endpoint 是当前 ROUTER 绑定的地址。
 	endpoint transport.Endpoint
+	// recvQueueSize 限制每个逻辑连接和 stream 的 Go 层接收队列。
+	recvQueueSize int
 	// owner 独占 ROUTER socket；listener/conn 不能直接操作 socket。
 	owner *owner
 
@@ -46,9 +48,10 @@ func newListener(endpoint transport.Endpoint, opts Options) (transport.Listener,
 		return nil, err
 	}
 	l := &listener{
-		endpoint: endpoint,
-		conns:    map[string]*conn{},
-		changed:  make(chan struct{}),
+		endpoint:      endpoint,
+		recvQueueSize: opts.RecvQueueSize,
+		conns:         map[string]*conn{},
+		changed:       make(chan struct{}),
 	}
 	// ROUTER 的所有收发都由 owner.run 串行处理。handleIncoming 只负责把已解码 frame
 	// 转换成 zrpc 的逻辑 conn/stream，不直接碰 ZeroMQ socket。
@@ -109,16 +112,16 @@ func (l *listener) Close(ctx context.Context) error {
 	return l.owner.close(ctx)
 }
 
-func (l *listener) handleIncoming(route []byte, frame *protocol.Frame) {
+func (l *listener) handleIncoming(route []byte, frame *protocol.Frame) []routeFrameAction {
 	if frame == nil {
-		return
+		return nil
 	}
 	conn := l.connForRoute(route)
 	if conn == nil || frame.Type == protocol.FramePing {
 		// Ping 只用于让 ROUTER 学到/确认 DEALER identity，不形成业务 stream。
-		return
+		return nil
 	}
-	conn.routeFrame(frame)
+	return conn.routeFrame(frame)
 }
 
 func (l *listener) connForRoute(route []byte) *conn {
@@ -135,7 +138,7 @@ func (l *listener) connForRoute(route []byte) *conn {
 	// 注意：服务端 conn 不拥有 socket；它共享 listener.owner，并在发送时携带 route。
 	routeCopy := append([]byte(nil), route...)
 	remote := transport.Endpoint{Transport: "zmq", Address: hex.EncodeToString(routeCopy)}
-	conn := newConn(nextConnID("server"), l.endpoint, remote, l, true)
+	conn := newConn(nextConnID("server"), l.endpoint, remote, l, true, l.recvQueueSize)
 	conn.route = routeCopy
 	conn.owner = l.owner
 	l.conns[key] = conn

@@ -36,7 +36,7 @@ type owner struct {
 	isRouter bool
 	// incoming 是 socket 收到并解码 frame 后的回调。
 	// ROUTER 模式会携带 route，DEALER 模式 route 为空。
-	incoming func(route []byte, frame *protocol.Frame)
+	incoming func(route []byte, frame *protocol.Frame) []routeFrameAction
 
 	// sendCh 接收其他 goroutine 提交的发送请求。
 	sendCh  chan sendRequest
@@ -60,7 +60,12 @@ type closeRequest struct {
 	result chan error
 }
 
-func newOwner(zctx *zmq4.Context, socket *zmq4.Socket, isRouter bool, opts Options, incoming func(route []byte, frame *protocol.Frame)) *owner {
+type routeFrameAction struct {
+	route []byte
+	frame *protocol.Frame
+}
+
+func newOwner(zctx *zmq4.Context, socket *zmq4.Socket, isRouter bool, opts Options, incoming func(route []byte, frame *protocol.Frame) []routeFrameAction) *owner {
 	o := &owner{
 		socket:   socket,
 		context:  zctx,
@@ -228,7 +233,13 @@ func (o *owner) recvAvailable() {
 			// 坏 frame 直接丢弃。后续可接入 transport metrics 记录 decode 错误。
 			continue
 		}
-		o.incoming(route, frame)
+		actions := o.incoming(route, frame)
+		for _, action := range actions {
+			if action.frame == nil {
+				continue
+			}
+			_ = o.sendNow(sendRequest{route: action.route, frame: action.frame})
+		}
 	}
 }
 
@@ -286,18 +297,20 @@ type conn struct {
 	// draining 表示连接不再接受新 stream，但已有 stream 可继续收尾。
 	draining bool
 	// changed 用于唤醒等待 AcceptStream 的 goroutine。
-	changed chan struct{}
+	changed       chan struct{}
+	recvQueueSize int
 }
 
-func newConn(id string, local, remote transport.Endpoint, listener *listener, server bool) *conn {
+func newConn(id string, local, remote transport.Endpoint, listener *listener, server bool, recvQueueSize int) *conn {
 	return &conn{
-		id:       id,
-		local:    local,
-		remote:   remote,
-		listener: listener,
-		server:   server,
-		streams:  map[string]*stream{},
-		changed:  make(chan struct{}),
+		id:            id,
+		local:         local,
+		remote:        remote,
+		listener:      listener,
+		server:        server,
+		streams:       map[string]*stream{},
+		changed:       make(chan struct{}),
+		recvQueueSize: recvQueueSize,
 	}
 }
 
@@ -428,21 +441,24 @@ func (c *conn) removeStream(id string) {
 	c.mu.Unlock()
 }
 
-func (c *conn) routeFrame(frame *protocol.Frame) {
+func (c *conn) routeFrame(frame *protocol.Frame) []routeFrameAction {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return
+		return nil
 	}
 	if stream := c.streams[frame.StreamID]; stream != nil {
 		c.mu.Unlock()
 		// 已知 stream 的后续 frame 直接入队，等待对应 RecvFrame 消费。
-		stream.enqueueFrame(frame)
-		return
+		return stream.enqueueFrame(frame)
 	}
 	if frame.Type != protocol.FrameRequest {
 		c.mu.Unlock()
-		return
+		return nil
+	}
+	if len(c.incoming) >= c.recvQueueSize {
+		c.mu.Unlock()
+		return c.resetActions(frame.StreamID)
 	}
 	// 首个 request frame 会创建服务端侧 stream，后续 data/response frame 再按 StreamID 路由。
 	stream := newStream(frame.StreamID, c)
@@ -450,7 +466,7 @@ func (c *conn) routeFrame(frame *protocol.Frame) {
 	c.incoming = append(c.incoming, stream)
 	c.signalLocked()
 	c.mu.Unlock()
-	stream.enqueueFrame(frame)
+	return stream.enqueueFrame(frame)
 }
 
 func (c *conn) closeLocal() {
@@ -479,6 +495,13 @@ func (c *conn) signalLocked() {
 	// 使用 close channel 作为广播信号；替换新 channel 后，下一批等待者会等待新的状态变化。
 	close(c.changed)
 	c.changed = make(chan struct{})
+}
+
+func (c *conn) resetActions(streamID string) []routeFrameAction {
+	return []routeFrameAction{{
+		route: append([]byte(nil), c.route...),
+		frame: receiveQueueFullReset(streamID),
+	}}
 }
 
 type stream struct {
@@ -574,15 +597,28 @@ func (s *stream) Reset(ctx context.Context, st *status.Status) error {
 	return err
 }
 
-func (s *stream) enqueueFrame(frame *protocol.Frame) {
+func (s *stream) enqueueFrame(frame *protocol.Frame) []routeFrameAction {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
-		return
+		s.mu.Unlock()
+		return nil
+	}
+	if !canBypassRecvQueue(frame) && len(s.frames) >= s.conn.recvQueueSize {
+		s.closed = true
+		conn := s.conn
+		s.signalLocked()
+		s.mu.Unlock()
+		if conn != nil {
+			conn.removeStream(s.id)
+			return conn.resetActions(s.id)
+		}
+		return nil
 	}
 	// 入队时 clone frame，隔离 owner goroutine 与业务 goroutine 的内存所有权。
 	s.frames = append(s.frames, cloneFrame(frame))
 	s.signalLocked()
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *stream) closeLocal() {
@@ -701,6 +737,18 @@ func normalizeEndpoint(endpoint transport.Endpoint) transport.Endpoint {
 		endpoint.Transport = "zmq"
 	}
 	return endpoint
+}
+
+func canBypassRecvQueue(frame *protocol.Frame) bool {
+	return frame != nil && (frame.Type == protocol.FrameEnd || frame.Type == protocol.FrameReset)
+}
+
+func receiveQueueFullReset(streamID string) *protocol.Frame {
+	return &protocol.Frame{
+		Type:     protocol.FrameReset,
+		StreamID: streamID,
+		Status:   &status.Status{Code: status.ResourceExhausted, Message: "transport receive queue full"},
+	}
 }
 
 func nextConnID(prefix string) string {

@@ -9,7 +9,7 @@ import "time"
 //   - Go owner 层参数，如 SendQueueSize/RecvQueueSize/HandshakeTimeout。
 //
 // 高并发场景下要同时关注两层队列。SndHWM/RcvHWM 只约束 libzmq 内部队列，
-// SendQueueSize 和未来的 RecvQueueSize 用于约束 Go 进程内的排队内存。
+// SendQueueSize 和 RecvQueueSize 用于约束 Go 进程内的排队内存。
 type Options struct {
 	// SndHWM 是 ZeroMQ 发送高水位。
 	//
@@ -18,8 +18,7 @@ type Options struct {
 	SndHWM int
 	// RcvHWM 是 ZeroMQ 接收高水位。
 	//
-	// 它限制 libzmq 接收队列的大小，但不限制 Go 层 stream.frames；
-	// 因此高并发/慢消费者场景还需要 RecvQueueSize 真正落地。
+	// 它限制 libzmq 接收队列的大小；已经进入 Go 进程的 frame 再由 RecvQueueSize 限制。
 	RcvHWM int
 	// Linger 是 socket 关闭时等待未发送消息的时间。
 	//
@@ -41,10 +40,10 @@ type Options struct {
 	// 这是业务 goroutine 进入 owner 前的第一道背压。队列满时 SendFrame/OpenStream
 	// 会阻塞，直到 ctx 超时/取消或 owner 腾出容量。
 	SendQueueSize int
-	// RecvQueueSize 预留为 Go 层接收队列大小。
+	// RecvQueueSize 是 Go 层接收队列大小，按 frame 个数计算。
 	//
-	// 当前实现尚未强制使用该值，stream.frames 仍是无界队列。
-	// 后续应将它应用到 conn incoming 队列和每个 stream 的 frame 队列。
+	// 它同时限制 conn incoming stream 队列和每个 stream 的 frame 队列。
+	// 队列满时会向对端返回 ResourceExhausted reset；FrameEnd/FrameReset 可绕过该上限。
 	RecvQueueSize int
 	// HandshakeTimeout 是客户端建连后发送 ping 的超时时间。
 	//
@@ -67,7 +66,7 @@ func defaultOptions(opts Options) Options {
 	if opts.SendQueueSize == 0 {
 		opts.SendQueueSize = 1024
 	}
-	if opts.RecvQueueSize == 0 {
+	if opts.RecvQueueSize <= 0 {
 		opts.RecvQueueSize = 1024
 	}
 	if opts.HandshakeTimeout == 0 {
