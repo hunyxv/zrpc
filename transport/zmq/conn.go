@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hunyxv/zrpc/metadata"
+	"github.com/hunyxv/zrpc/metrics"
 	"github.com/hunyxv/zrpc/protocol"
 	"github.com/hunyxv/zrpc/status"
 	"github.com/hunyxv/zrpc/transport"
@@ -19,260 +20,15 @@ import (
 )
 
 var (
-	errListenerClosed     = errors.New("zmq: listener closed")
-	errConnectionClosed   = errors.New("zmq: connection closed")
-	errConnectionDraining = errors.New("zmq: connection draining")
-	errStreamClosed       = errors.New("zmq: stream closed")
-	errOwnerClosed        = errors.New("zmq: owner closed")
+	errListenerClosed        = errors.New("zmq: listener closed")
+	errConnectionClosed      = errors.New("zmq: connection closed")
+	errConnectionDraining    = errors.New("zmq: connection draining")
+	errCloseHandshakeTimeout = errors.New("zmq: close handshake timeout")
+	errStreamClosed          = errors.New("zmq: stream closed")
 
 	connSeq   atomic.Uint64
 	streamSeq atomic.Uint64
 )
-
-type owner struct {
-	// socket 只能由 owner.run 所在 goroutine 访问，避免多个 goroutine 并发操作 libzmq socket。
-	socket   *zmq4.Socket
-	context  *zmq4.Context
-	isRouter bool
-	// incoming 是 socket 收到并解码 frame 后的回调。
-	// ROUTER 模式会携带 route，DEALER 模式 route 为空。
-	incoming func(route []byte, frame *protocol.Frame) []routeFrameAction
-
-	// sendCh 接收其他 goroutine 提交的发送请求。
-	sendCh  chan sendRequest
-	closeCh chan closeRequest
-	// done 在 owner.run 完全退出后关闭，调用方可用它判断 socket 生命周期结束。
-	done chan struct{}
-}
-
-type sendRequest struct {
-	// ctx 控制排队和实际发送等待时间。
-	ctx context.Context
-	// route 仅 ROUTER 发送时使用，表示目标 DEALER identity。
-	route []byte
-	// frame 在进入 owner 前已经 clone，避免调用方并发修改。
-	frame *protocol.Frame
-	// result 把 socket 发送结果返回给调用 goroutine。
-	result chan error
-}
-
-type closeRequest struct {
-	result chan error
-}
-
-type routeFrameAction struct {
-	route []byte
-	frame *protocol.Frame
-}
-
-func newOwner(zctx *zmq4.Context, socket *zmq4.Socket, isRouter bool, opts Options, incoming func(route []byte, frame *protocol.Frame) []routeFrameAction) *owner {
-	o := &owner{
-		socket:   socket,
-		context:  zctx,
-		isRouter: isRouter,
-		incoming: incoming,
-		sendCh:   make(chan sendRequest, opts.SendQueueSize),
-		closeCh:  make(chan closeRequest),
-		done:     make(chan struct{}),
-	}
-	go o.run()
-	return o
-}
-
-func (o *owner) send(ctx context.Context, route []byte, frame *protocol.Frame) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	req := sendRequest{
-		ctx:    ctx,
-		route:  append([]byte(nil), route...),
-		frame:  cloneFrame(frame),
-		result: make(chan error, 1),
-	}
-	// 第一段 select 负责进入 owner 队列；队列满时由 ctx 控制等待上限。
-	select {
-	case o.sendCh <- req:
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-o.done:
-		return errOwnerClosed
-	}
-	// 第二段 select 等待 owner goroutine 实际执行 socket send 后返回结果。
-	select {
-	case err := <-req.result:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-o.done:
-		return errOwnerClosed
-	}
-}
-
-func (o *owner) close(ctx context.Context) error {
-	req := closeRequest{result: make(chan error, 1)}
-	// close 也必须交给 owner.run 执行，因为 socket/context 的关闭要和 send/recv 串行。
-	select {
-	case o.closeCh <- req:
-	case <-o.done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	select {
-	case err := <-req.result:
-		return err
-	case <-o.done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (o *owner) run() {
-	defer close(o.done)
-	poller := zmq4.NewPoller()
-	poller.Add(o.socket, zmq4.POLLIN)
-	var pending []sendRequest
-	for {
-		var closeReq *closeRequest
-		// ZeroMQ socket 不是并发安全对象，所有 socket I/O 必须集中在 owner goroutine。
-		// 每轮先吸收控制请求，再尝试刷出 pending，最后 poll 读事件。
-		pending, closeReq = o.drainControl(pending)
-		if closeReq != nil {
-			o.finish(closeReq, pending)
-			return
-		}
-		pending = o.flushPending(pending)
-		// 当前 poll 使用固定 5ms 间隔；后续可改成可被 sendCh 唤醒的 reactor，降低空闲发送延迟。
-		polled, err := poller.Poll(5 * time.Millisecond)
-		if err != nil && !isAgain(err) {
-			o.failPending(pending, err)
-			_ = o.socket.Close()
-			_ = o.context.Term()
-			return
-		}
-		for _, event := range polled {
-			if event.Socket == o.socket && event.Events&zmq4.POLLIN != 0 {
-				o.recvAvailable()
-			}
-		}
-	}
-}
-
-func (o *owner) drainControl(pending []sendRequest) ([]sendRequest, *closeRequest) {
-	for {
-		select {
-		case req := <-o.sendCh:
-			// 不在这里直接发送，是为了把控制队列 drain 干净后统一按 pending 顺序刷出。
-			pending = append(pending, req)
-		case req := <-o.closeCh:
-			// close 优先级高于继续等待新发送；已有 pending 会在 finish 中统一失败。
-			return pending, &req
-		default:
-			return pending, nil
-		}
-	}
-}
-
-func (o *owner) flushPending(pending []sendRequest) []sendRequest {
-	for len(pending) > 0 {
-		req := pending[0]
-		if err := req.ctx.Err(); err != nil {
-			// 请求在排队期间已经超时或取消，直接回传 ctx 错误。
-			req.result <- err
-			pending[0] = sendRequest{}
-			pending = pending[1:]
-			continue
-		}
-		err := o.sendNow(req)
-		if isAgain(err) {
-			// ZeroMQ 当前不可写，保留 pending 队列，下一轮 poll/flush 再试。
-			return pending
-		}
-		req.result <- err
-		pending[0] = sendRequest{}
-		pending = pending[1:]
-	}
-	return pending
-}
-
-func (o *owner) sendNow(req sendRequest) error {
-	raw, err := encodeFrame(req.frame)
-	if err != nil {
-		return err
-	}
-	if o.isRouter {
-		if len(req.route) == 0 {
-			return errors.New("zmq: router send route is required")
-		}
-		// ROUTER 发送必须显式带目标 route，ZeroMQ 会按该 identity 路由到对应 DEALER。
-		_, err = o.socket.SendMessageDontwait(req.route, raw)
-		return err
-	}
-	// DEALER 发送不需要 route，服务端 ROUTER 会从 multipart envelope 中拿到发送方 identity。
-	_, err = o.socket.SendMessageDontwait(raw)
-	return err
-}
-
-func (o *owner) recvAvailable() {
-	for {
-		// DONTWAIT 让 owner 一次性读空当前可读数据，直到 EAGAIN。
-		parts, err := o.socket.RecvMessageBytes(zmq4.DONTWAIT)
-		if isAgain(err) {
-			return
-		}
-		if err != nil {
-			return
-		}
-		route, raw, ok := o.parseMessage(parts)
-		if !ok {
-			continue
-		}
-		frame, err := decodeFrame(raw)
-		if err != nil {
-			// 坏 frame 直接丢弃。后续可接入 transport metrics 记录 decode 错误。
-			continue
-		}
-		actions := o.incoming(route, frame)
-		for _, action := range actions {
-			if action.frame == nil {
-				continue
-			}
-			_ = o.sendNow(sendRequest{route: action.route, frame: action.frame})
-		}
-	}
-}
-
-func (o *owner) parseMessage(parts [][]byte) ([]byte, []byte, bool) {
-	if o.isRouter {
-		if len(parts) < 2 {
-			return nil, nil, false
-		}
-		// ROUTER 收到的第一段是 DEALER identity，最后一段是 zrpc frame。
-		// 当前协议不使用空 delimiter，中间段如存在会被忽略。
-		return append([]byte(nil), parts[0]...), parts[len(parts)-1], true
-	}
-	if len(parts) == 0 {
-		return nil, nil, false
-	}
-	return nil, parts[len(parts)-1], true
-}
-
-func (o *owner) finish(req *closeRequest, pending []sendRequest) {
-	// close 到达后不再发送 pending，全部返回 owner closed，避免关闭中的 socket 继续被使用。
-	o.failPending(pending, errOwnerClosed)
-	err := o.socket.Close()
-	if termErr := o.context.Term(); err == nil {
-		err = termErr
-	}
-	req.result <- err
-}
-
-func (o *owner) failPending(pending []sendRequest, err error) {
-	for _, req := range pending {
-		req.result <- err
-	}
-}
 
 type conn struct {
 	// id 是本地逻辑连接 ID；客户端通常与 DEALER identity 相同。
@@ -286,32 +42,60 @@ type conn struct {
 	// route 是 ROUTER 回复该连接时使用的 DEALER identity；客户端侧为空。
 	route []byte
 	// server 标识该 conn 是否是服务端 route 上的逻辑连接。
-	server bool
+	server  bool
+	metrics metrics.Collector
 
 	mu sync.Mutex
 	// incoming 保存已经由 FrameRequest 创建、等待 server.AcceptStream 消费的新 stream。
 	incoming []transport.TransportStream
 	// streams 按 StreamID 保存当前连接上的活跃 stream。
-	streams map[string]*stream
-	closed  bool
-	// draining 表示连接不再接受新 stream，但已有 stream 可继续收尾。
-	draining bool
+	streams               map[string]*stream
+	lifecycle             connLifecycle
+	controlSeq            uint64
+	closeStarted          bool
+	closeFinished         bool
+	closeSeq              uint64
+	closeAck              chan struct{}
+	closeDone             chan struct{}
+	closeErr              error
+	closeHandshakeTimeout time.Duration
+	heartbeat             heartbeatState
+	heartbeatInterval     time.Duration
+	peerTimeout           time.Duration
+	peerTimedOut          bool
+	drainSent             bool
+	// sendFrame is injectable so lifecycle behavior can be tested without a socket.
+	sendFrame func(context.Context, *protocol.Frame) error
 	// changed 用于唤醒等待 AcceptStream 的 goroutine。
 	changed       chan struct{}
 	recvQueueSize int
 }
 
-func newConn(id string, local, remote transport.Endpoint, listener *listener, server bool, recvQueueSize int) *conn {
-	return &conn{
-		id:            id,
-		local:         local,
-		remote:        remote,
-		listener:      listener,
-		server:        server,
-		streams:       map[string]*stream{},
-		changed:       make(chan struct{}),
-		recvQueueSize: recvQueueSize,
+func newConn(id string, local, remote transport.Endpoint, listener *listener, server bool, opts Options) *conn {
+	return newConnWithMetrics(id, local, remote, listener, server, opts, true)
+}
+
+func newConnWithMetrics(id string, local, remote transport.Endpoint, listener *listener, server bool, opts Options, reportOpen bool) *conn {
+	c := &conn{
+		id:                    id,
+		local:                 local,
+		remote:                remote,
+		listener:              listener,
+		server:                server,
+		metrics:               opts.Metrics,
+		streams:               map[string]*stream{},
+		lifecycle:             newConnLifecycle(),
+		changed:               make(chan struct{}),
+		recvQueueSize:         opts.RecvQueueSize,
+		closeHandshakeTimeout: opts.CloseHandshakeTimeout,
+		heartbeat:             newHeartbeatState(time.Now()),
+		heartbeatInterval:     opts.HeartbeatInterval,
+		peerTimeout:           opts.PeerTimeout,
 	}
+	if reportOpen {
+		c.emitConnectionDelta(1, nil)
+	}
+	return c
 }
 
 func (c *conn) ID() string {
@@ -342,7 +126,7 @@ func (c *conn) OpenStream(ctx context.Context, method string, md metadata.MD) (t
 	requestMD.Set(transport.MethodMetadataKey, method)
 	// OpenStream 先发送 FrameRequest。上层 unary 会随后发送 FrameData；
 	// stream 调用则在 metadata 中额外带 rpc-mode=stream。
-	err := c.owner.send(ctx, c.route, &protocol.Frame{
+	err := c.sendProtocolFrame(ctx, &protocol.Frame{
 		Type:      protocol.FrameRequest,
 		StreamID:  stream.id,
 		Direction: protocol.DirectionClientToServer,
@@ -362,10 +146,6 @@ func (c *conn) AcceptStream(ctx context.Context) (transport.TransportStream, err
 			return nil, err
 		}
 		c.mu.Lock()
-		if c.closed {
-			c.mu.Unlock()
-			return nil, errConnectionClosed
-		}
 		if len(c.incoming) > 0 {
 			// FIFO 返回对端新打开的 stream。当前 incoming 尚未接入 RecvQueueSize 上限。
 			stream := c.incoming[0]
@@ -374,7 +154,11 @@ func (c *conn) AcceptStream(ctx context.Context) (transport.TransportStream, err
 			c.mu.Unlock()
 			return stream, nil
 		}
-		if c.draining {
+		if c.lifecycle.local >= stateClosing || c.lifecycle.peer >= stateClosing {
+			c.mu.Unlock()
+			return nil, errConnectionClosed
+		}
+		if !c.lifecycle.canAccept() {
 			c.mu.Unlock()
 			return nil, errConnectionDraining
 		}
@@ -391,20 +175,50 @@ func (c *conn) AcceptStream(ctx context.Context) (transport.TransportStream, err
 }
 
 func (c *conn) Close(ctx context.Context) error {
-	if c.server {
-		// 服务端 conn 只是 ROUTER 上某个 route 的逻辑连接，不能关闭共享 ROUTER socket。
-		c.closeLocal()
-		if c.listener != nil {
-			c.listener.removeConn(c)
+	c.mu.Lock()
+	if c.closeFinished {
+		err := c.closeErr
+		c.mu.Unlock()
+		return err
+	}
+	started := c.closeStarted
+	var streams []*stream
+	if !started {
+		c.closeStarted = true
+		c.lifecycle.startLocalClose()
+		c.closeSeq = c.nextControlSeqLocked()
+		c.closeAck = make(chan struct{})
+		c.closeDone = make(chan struct{})
+		streams = c.detachStreamsLocked()
+		c.signalLocked()
+	}
+	seq := c.closeSeq
+	ack := c.closeAck
+	done := c.closeDone
+	c.mu.Unlock()
+
+	for _, stream := range streams {
+		c.emitStreamDelta(stream.id, -1)
+		stream.closeLocal()
+	}
+	if !started {
+		if c.owner != nil {
+			c.owner.markRouteClosing(c.route)
 		}
-		return nil
+		go c.performClose(ctx, seq, ack)
 	}
-	// 客户端 conn 拥有独立 DEALER owner，关闭连接时需要关闭 socket/context。
-	c.closeLocal()
-	if c.owner == nil {
-		return nil
+	select {
+	case <-done:
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c.mu.Lock()
+		err := c.closeErr
+		c.mu.Unlock()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return c.owner.close(ctx)
 }
 
 func (c *conn) Drain(ctx context.Context) error {
@@ -412,38 +226,81 @@ func (c *conn) Drain(ctx context.Context) error {
 		return err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
+	if c.lifecycle.local >= stateClosing {
+		c.mu.Unlock()
 		return errConnectionClosed
 	}
-	c.draining = true
-	// 唤醒正在 AcceptStream 的 goroutine，让它看到 draining 状态并返回错误。
+	if c.lifecycle.local == stateDraining && c.drainSent {
+		c.mu.Unlock()
+		return nil
+	}
+	c.lifecycle.startLocalDrain()
+	seq := c.nextControlSeqLocked()
 	c.signalLocked()
-	return nil
+	c.mu.Unlock()
+	err := c.sendProtocolFrame(ctx, &protocol.Frame{Type: protocol.FrameGoAway, Seq: seq})
+	if err == nil {
+		c.mu.Lock()
+		c.drainSent = true
+		c.mu.Unlock()
+	}
+	return err
 }
 
 func (c *conn) addStream(stream *stream) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
+	if c.lifecycle.local >= stateClosing || c.lifecycle.peer >= stateClosing {
+		c.mu.Unlock()
 		return errConnectionClosed
 	}
-	if c.draining {
+	if !c.lifecycle.canOpen() {
+		c.mu.Unlock()
 		return errConnectionDraining
 	}
 	c.streams[stream.id] = stream
+	c.mu.Unlock()
+	c.emitStreamDelta(stream.id, 1)
 	return nil
 }
 
 func (c *conn) removeStream(id string) {
 	c.mu.Lock()
-	delete(c.streams, id)
+	_, exists := c.streams[id]
+	if exists {
+		delete(c.streams, id)
+	}
 	c.mu.Unlock()
+	if exists {
+		c.emitStreamDelta(id, -1)
+	}
 }
 
 func (c *conn) routeFrame(frame *protocol.Frame) []routeFrameAction {
+	if frame == nil {
+		return nil
+	}
+	switch frame.Type {
+	case protocol.FrameGoAway:
+		c.handleGoAway()
+		return nil
+	case protocol.FrameClose:
+		return c.handlePeerClose(frame.Seq)
+	case protocol.FrameCloseAck:
+		c.handleCloseAck(frame.Seq)
+		return nil
+	case protocol.FramePing:
+		emitTransportEvent(c.metrics, metrics.TransportEvent{
+			Kind:         metrics.TransportHeartbeatPong,
+			Value:        1,
+			ConnectionID: c.id,
+		})
+		return c.controlActions(&protocol.Frame{Type: protocol.FramePong, Seq: frame.Seq})
+	case protocol.FramePong:
+		return nil
+	}
+
 	c.mu.Lock()
-	if c.closed {
+	if c.lifecycle.local >= stateClosing || c.lifecycle.peer >= stateClosing {
 		c.mu.Unlock()
 		return nil
 	}
@@ -456,6 +313,10 @@ func (c *conn) routeFrame(frame *protocol.Frame) []routeFrameAction {
 		c.mu.Unlock()
 		return nil
 	}
+	if !c.lifecycle.canAccept() {
+		c.mu.Unlock()
+		return c.unavailableResetActions(frame.StreamID)
+	}
 	if len(c.incoming) >= c.recvQueueSize {
 		c.mu.Unlock()
 		return c.resetActions(frame.StreamID)
@@ -466,29 +327,12 @@ func (c *conn) routeFrame(frame *protocol.Frame) []routeFrameAction {
 	c.incoming = append(c.incoming, stream)
 	c.signalLocked()
 	c.mu.Unlock()
+	c.emitStreamDelta(stream.id, 1)
 	return stream.enqueueFrame(frame)
 }
 
 func (c *conn) closeLocal() {
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return
-	}
-	c.closed = true
-	// closeLocal 会关闭当前 conn 上所有 stream，并唤醒 AcceptStream。
-	streams := make([]*stream, 0, len(c.streams))
-	for _, stream := range c.streams {
-		streams = append(streams, stream)
-	}
-	c.streams = map[string]*stream{}
-	c.incoming = nil
-	c.signalLocked()
-	c.mu.Unlock()
-
-	for _, stream := range streams {
-		stream.closeLocal()
-	}
+	c.finishClose(nil)
 }
 
 func (c *conn) signalLocked() {
@@ -498,10 +342,265 @@ func (c *conn) signalLocked() {
 }
 
 func (c *conn) resetActions(streamID string) []routeFrameAction {
+	return c.controlActions(receiveQueueFullReset(streamID))
+}
+
+func (c *conn) unavailableResetActions(streamID string) []routeFrameAction {
+	return c.controlActions(&protocol.Frame{
+		Type:     protocol.FrameReset,
+		StreamID: streamID,
+		Status:   &status.Status{Code: status.Unavailable, Message: "connection is draining"},
+	})
+}
+
+func (c *conn) controlActions(frame *protocol.Frame) []routeFrameAction {
 	return []routeFrameAction{{
-		route: append([]byte(nil), c.route...),
-		frame: receiveQueueFullReset(streamID),
+		connectionID: c.id,
+		route:        append([]byte(nil), c.route...),
+		frame:        frame,
+		onComplete: func(err error) {
+			if err != nil {
+				c.failLocal(err)
+			}
+		},
 	}}
+}
+
+func (c *conn) failLocal(cause error) {
+	if c.owner != nil {
+		c.owner.markRouteClosing(c.route)
+	}
+	c.finishClose(cause)
+	if c.listener != nil {
+		c.listener.removeConn(c)
+	}
+	if !c.server && c.owner != nil {
+		c.owner.requestFailure(cause)
+	}
+}
+
+func (c *conn) sendProtocolFrame(ctx context.Context, frame *protocol.Frame) error {
+	var err error
+	if c.sendFrame != nil {
+		err = c.sendFrame(ctx, frame)
+	} else if c.owner == nil {
+		err = errOwnerClosed
+	} else {
+		err = c.owner.sendForConnection(ctx, c.id, c.route, frame)
+	}
+	if isRouteUnavailable(err) {
+		c.failLocal(err)
+	}
+	return err
+}
+
+func (c *conn) observeInbound(now time.Time) {
+	c.mu.Lock()
+	if !c.closeFinished {
+		c.heartbeat.observe(now)
+	}
+	c.mu.Unlock()
+}
+
+func (c *conn) heartbeatActions(now time.Time) []routeFrameAction {
+	c.mu.Lock()
+	if c.lifecycle.local >= stateClosing || c.lifecycle.peer >= stateClosing {
+		c.mu.Unlock()
+		return nil
+	}
+	if c.heartbeat.timedOut(now, c.peerTimeout) {
+		if c.peerTimedOut {
+			c.mu.Unlock()
+			return nil
+		}
+		c.peerTimedOut = true
+		c.mu.Unlock()
+		cause := status.Error(status.Unavailable, "zmq: peer heartbeat timeout")
+		emitTransportEvent(c.metrics, metrics.TransportEvent{
+			Kind:         metrics.TransportPeerTimeout,
+			Value:        1,
+			ConnectionID: c.id,
+			Error:        cause,
+		})
+		c.failLocal(cause)
+		return nil
+	}
+	if !c.heartbeat.shouldPing(now, c.heartbeatInterval) {
+		c.mu.Unlock()
+		return nil
+	}
+	seq := c.heartbeat.pendingPing
+	c.mu.Unlock()
+	emitTransportEvent(c.metrics, metrics.TransportEvent{
+		Kind:         metrics.TransportHeartbeatPing,
+		Value:        1,
+		ConnectionID: c.id,
+	})
+	return c.controlActions(&protocol.Frame{Type: protocol.FramePing, Seq: seq})
+}
+
+func (c *conn) emitStreamDelta(streamID string, value int64) {
+	emitTransportEvent(c.metrics, metrics.TransportEvent{
+		Kind:         metrics.TransportStreamDelta,
+		Value:        value,
+		ConnectionID: c.id,
+		StreamID:     streamID,
+	})
+}
+
+func (c *conn) emitConnectionDelta(value int64, err error) {
+	emitTransportEvent(c.metrics, metrics.TransportEvent{
+		Kind:         metrics.TransportConnectionDelta,
+		Value:        value,
+		ConnectionID: c.id,
+		Error:        err,
+	})
+}
+
+func (c *conn) nextControlSeqLocked() uint64 {
+	c.controlSeq++
+	return c.controlSeq
+}
+
+func (c *conn) detachStreamsLocked() []*stream {
+	streams := make([]*stream, 0, len(c.streams))
+	for _, stream := range c.streams {
+		streams = append(streams, stream)
+	}
+	c.streams = map[string]*stream{}
+	c.incoming = nil
+	return streams
+}
+
+func (c *conn) performClose(parent context.Context, seq uint64, ack <-chan struct{}) {
+	timeout := c.closeHandshakeTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	err := c.sendProtocolFrame(ctx, &protocol.Frame{Type: protocol.FrameClose, Seq: seq})
+	if err == nil {
+		var ownerDone <-chan struct{}
+		if c.owner != nil {
+			ownerDone = c.owner.done
+		}
+		select {
+		case <-ack:
+		case <-ctx.Done():
+			if parentErr := parent.Err(); parentErr != nil {
+				err = parentErr
+			} else {
+				err = errCloseHandshakeTimeout
+			}
+		case <-ownerDone:
+			err = errOwnerClosed
+		}
+	} else if errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil {
+		err = errCloseHandshakeTimeout
+	}
+	cancel()
+
+	if c.server {
+		if c.listener != nil {
+			c.listener.removeConn(c)
+		}
+	} else if c.owner != nil {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), timeout)
+		if closeErr := c.owner.close(closeCtx); err == nil {
+			err = closeErr
+		}
+		closeCancel()
+	}
+	c.finishClose(err)
+}
+
+func (c *conn) handleGoAway() {
+	c.mu.Lock()
+	if c.lifecycle.peer < stateClosing {
+		c.lifecycle.markPeerDraining()
+		c.signalLocked()
+	}
+	c.mu.Unlock()
+}
+
+func (c *conn) handleCloseAck(seq uint64) {
+	c.mu.Lock()
+	if c.closeStarted && seq == c.closeSeq && c.closeAck != nil {
+		close(c.closeAck)
+		c.closeAck = nil
+	}
+	c.mu.Unlock()
+}
+
+func (c *conn) handlePeerClose(seq uint64) []routeFrameAction {
+	c.mu.Lock()
+	if c.lifecycle.peer == stateClosed {
+		c.mu.Unlock()
+		return nil
+	}
+	localCloseAlreadyStarted := c.closeStarted
+	if !c.closeStarted {
+		c.closeStarted = true
+		c.closeDone = make(chan struct{})
+		c.lifecycle.startLocalClose()
+	}
+	c.lifecycle.markPeerClosing()
+	streams := c.detachStreamsLocked()
+	c.signalLocked()
+	c.mu.Unlock()
+	for _, stream := range streams {
+		c.emitStreamDelta(stream.id, -1)
+		stream.closeLocal()
+	}
+	return []routeFrameAction{{
+		connectionID: c.id,
+		route:        append([]byte(nil), c.route...),
+		frame:        &protocol.Frame{Type: protocol.FrameCloseAck, Seq: seq},
+		onComplete: func(err error) {
+			if localCloseAlreadyStarted {
+				if err != nil {
+					c.failLocal(err)
+				}
+				return
+			}
+			c.finishPeerClose(err)
+		},
+	}}
+}
+
+func (c *conn) finishPeerClose(err error) {
+	c.finishClose(err)
+	if c.listener != nil {
+		c.listener.removeConn(c)
+	}
+	if !c.server && c.owner != nil {
+		c.owner.requestFailure(errOwnerClosed)
+	}
+}
+
+func (c *conn) finishClose(err error) {
+	c.mu.Lock()
+	if c.closeFinished {
+		c.mu.Unlock()
+		return
+	}
+	c.closeStarted = true
+	c.closeFinished = true
+	c.closeErr = err
+	c.lifecycle.markClosed()
+	streams := c.detachStreamsLocked()
+	if c.closeDone == nil {
+		c.closeDone = make(chan struct{})
+	}
+	done := c.closeDone
+	c.signalLocked()
+	close(done)
+	c.mu.Unlock()
+	for _, stream := range streams {
+		c.emitStreamDelta(stream.id, -1)
+		stream.closeLocal()
+	}
+	c.emitConnectionDelta(-1, err)
 }
 
 type stream struct {
@@ -509,8 +608,7 @@ type stream struct {
 	conn *conn
 
 	mu sync.Mutex
-	// frames 是该 stream 已收到但尚未被 RecvFrame 消费的 frame 队列。
-	// 当前队列无上限，后续需要接入 RecvQueueSize 或 per-stream queue limit。
+	// frames 是该 stream 已收到但尚未被 RecvFrame 消费的有界 frame 队列。
 	frames []*protocol.Frame
 	closed bool
 	// changed 用于唤醒等待 RecvFrame 的 goroutine。
@@ -545,7 +643,7 @@ func (s *stream) SendFrame(ctx context.Context, frame *protocol.Frame) error {
 		return errStreamClosed
 	}
 	// 发送最终委托给 conn.owner，保证 ZeroMQ socket I/O 串行。
-	return s.conn.owner.send(ctx, s.conn.route, frame)
+	return s.conn.sendProtocolFrame(ctx, frame)
 }
 
 func (s *stream) RecvFrame(ctx context.Context) (*protocol.Frame, error) {

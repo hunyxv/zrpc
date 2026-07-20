@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/hunyxv/zrpc/protocol"
+	"github.com/hunyxv/zrpc/status"
 	"github.com/hunyxv/zrpc/transport"
 	zmq4 "github.com/pebbe/zmq4"
 )
@@ -16,6 +18,7 @@ type listener struct {
 	endpoint transport.Endpoint
 	// recvQueueSize 限制每个逻辑连接和 stream 的 Go 层接收队列。
 	recvQueueSize int
+	opts          Options
 	// owner 独占 ROUTER socket；listener/conn 不能直接操作 socket。
 	owner *owner
 
@@ -27,10 +30,15 @@ type listener struct {
 	conns  map[string]*conn
 	closed bool
 	// changed 是 Accept 的广播唤醒信号。每次状态变化后关闭旧 channel 并替换新 channel。
-	changed chan struct{}
+	changed   chan struct{}
+	sweepStop chan struct{}
+	sweepDone chan struct{}
 }
 
 func newListener(endpoint transport.Endpoint, opts Options) (transport.Listener, error) {
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
 	if endpoint.Address == "" {
 		return nil, errors.New("zmq: endpoint address is required")
 	}
@@ -50,12 +58,21 @@ func newListener(endpoint transport.Endpoint, opts Options) (transport.Listener,
 	l := &listener{
 		endpoint:      endpoint,
 		recvQueueSize: opts.RecvQueueSize,
+		opts:          opts,
 		conns:         map[string]*conn{},
 		changed:       make(chan struct{}),
+		sweepStop:     make(chan struct{}),
+		sweepDone:     make(chan struct{}),
 	}
 	// ROUTER 的所有收发都由 owner.run 串行处理。handleIncoming 只负责把已解码 frame
 	// 转换成 zrpc 的逻辑 conn/stream，不直接碰 ZeroMQ socket。
-	l.owner = newOwner(zctx, socket, true, opts, l.handleIncoming)
+	l.owner, err = newOwner(zctx, socket, true, opts, l.handleIncoming, nil, l.ownerFailed)
+	if err != nil {
+		_ = socket.Close()
+		_ = zctx.Term()
+		return nil, err
+	}
+	go l.runHeartbeatSweeper()
 	return l, nil
 }
 
@@ -102,8 +119,10 @@ func (l *listener) Close(ctx context.Context) error {
 	}
 	l.conns = map[string]*conn{}
 	l.accepts = nil
+	close(l.sweepStop)
 	l.signalLocked()
 	l.mu.Unlock()
+	<-l.sweepDone
 
 	for _, conn := range conns {
 		conn.closeLocal()
@@ -116,35 +135,57 @@ func (l *listener) handleIncoming(route []byte, frame *protocol.Frame) []routeFr
 	if frame == nil {
 		return nil
 	}
-	conn := l.connForRoute(route)
-	if conn == nil || frame.Type == protocol.FramePing {
-		// Ping 只用于让 ROUTER 学到/确认 DEALER identity，不形成业务 stream。
+	allowCreate := frame.Type == protocol.FramePing || frame.Type == protocol.FrameRequest
+	conn, cancelPending := l.connForRoute(route, allowCreate)
+	if conn == nil {
+		if cancelPending && frame.Type == protocol.FrameRequest {
+			return []routeFrameAction{{
+				route: append([]byte(nil), route...),
+				frame: &protocol.Frame{
+					Type:     protocol.FrameReset,
+					StreamID: frame.StreamID,
+					Status:   &status.Status{Code: status.Unavailable, Message: "previous route is still closing"},
+				},
+			}}
+		}
 		return nil
 	}
+	conn.observeInbound(time.Now())
 	return conn.routeFrame(frame)
 }
 
-func (l *listener) connForRoute(route []byte) *conn {
+func (l *listener) connForRoute(route []byte, allowCreate bool) (*conn, bool) {
 	key := string(route)
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
-		return nil
+		l.mu.Unlock()
+		return nil, false
 	}
 	if conn := l.conns[key]; conn != nil {
-		return conn
+		l.mu.Unlock()
+		return conn, false
+	}
+	if !allowCreate {
+		l.mu.Unlock()
+		return nil, false
+	}
+	if !l.owner.openRoute(route) {
+		l.mu.Unlock()
+		return nil, true
 	}
 	// 首次看到某个 DEALER identity 时，创建一个服务端逻辑 conn。
 	// 注意：服务端 conn 不拥有 socket；它共享 listener.owner，并在发送时携带 route。
 	routeCopy := append([]byte(nil), route...)
 	remote := transport.Endpoint{Transport: "zmq", Address: hex.EncodeToString(routeCopy)}
-	conn := newConn(nextConnID("server"), l.endpoint, remote, l, true, l.recvQueueSize)
+	conn := newConnWithMetrics(nextConnID("server"), l.endpoint, remote, l, true, l.opts, false)
 	conn.route = routeCopy
 	conn.owner = l.owner
 	l.conns[key] = conn
 	l.accepts = append(l.accepts, conn)
 	l.signalLocked()
-	return conn
+	l.mu.Unlock()
+	conn.emitConnectionDelta(1, nil)
+	return conn, false
 }
 
 func (l *listener) removeConn(conn *conn) {
@@ -153,12 +194,65 @@ func (l *listener) removeConn(conn *conn) {
 	if l.conns == nil {
 		return
 	}
-	// conn.Close 只移除该 route 对应的逻辑连接，不影响共享 ROUTER socket。
-	delete(l.conns, string(conn.route))
+	// Delayed cleanup from an old conn must not remove a replacement that reused
+	// the same DEALER identity.
+	key := string(conn.route)
+	if l.conns[key] == conn {
+		delete(l.conns, key)
+	}
 }
 
 func (l *listener) signalLocked() {
 	// close channel 用作广播，比向 channel 发送单个值更适合唤醒多个等待中的 Accept。
 	close(l.changed)
 	l.changed = make(chan struct{})
+}
+
+func (l *listener) runHeartbeatSweeper() {
+	defer close(l.sweepDone)
+	ticker := time.NewTicker(l.opts.HeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			l.sweepHeartbeats(now)
+		case <-l.sweepStop:
+			return
+		}
+	}
+}
+
+func (l *listener) ownerFailed(cause error) {
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return
+	}
+	l.closed = true
+	conns := make([]*conn, 0, len(l.conns))
+	for _, conn := range l.conns {
+		conns = append(conns, conn)
+	}
+	l.conns = map[string]*conn{}
+	l.accepts = nil
+	close(l.sweepStop)
+	l.signalLocked()
+	l.mu.Unlock()
+	for _, conn := range conns {
+		conn.finishClose(cause)
+	}
+}
+
+func (l *listener) sweepHeartbeats(now time.Time) {
+	l.mu.Lock()
+	conns := make([]*conn, 0, len(l.conns))
+	for _, conn := range l.conns {
+		conns = append(conns, conn)
+	}
+	l.mu.Unlock()
+	for _, conn := range conns {
+		for _, action := range conn.heartbeatActions(now) {
+			l.owner.enqueueAction(action)
+		}
+	}
 }

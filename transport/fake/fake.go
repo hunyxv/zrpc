@@ -494,7 +494,7 @@ func (s *stream) RecvFrame(ctx context.Context) (*protocol.Frame, error) {
 }
 
 func (s *stream) Close(ctx context.Context) error {
-	s.closeBoth()
+	s.closeLocal(true)
 	return nil
 }
 
@@ -528,6 +528,12 @@ func (s *stream) enqueueFrame(ctx context.Context, frame *protocol.Frame) error 
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		// A real asynchronous transport may accept late flow-control frames after
+		// the peer has reclaimed its local stream. Treat them as delivered so a
+		// successfully received payload is not turned into a transport error.
+		if cloned.Type == protocol.FrameWindowUpdate {
+			return nil
+		}
 		return errPeerStreamClosed
 	}
 	if !canBypassRecvQueue(cloned) && len(s.frames) >= s.recvQueueSize() {

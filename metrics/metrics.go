@@ -21,10 +21,31 @@ type StreamEvent struct {
 	Bytes int
 }
 
+// TransportEventKind 是稳定的 transport 事件类型。
+type TransportEventKind string
+
+const (
+	TransportConnectionDelta  TransportEventKind = "connection_delta"
+	TransportStreamDelta      TransportEventKind = "stream_delta"
+	TransportQueueRejected    TransportEventKind = "queue_rejected"
+	TransportHeartbeatPing    TransportEventKind = "heartbeat_ping"
+	TransportHeartbeatPong    TransportEventKind = "heartbeat_pong"
+	TransportPeerTimeout      TransportEventKind = "peer_timeout"
+	TransportRouteUnavailable TransportEventKind = "route_unavailable"
+)
+
 // TransportEvent 描述 transport 级观测事件。
 type TransportEvent struct {
 	// Transport 是 transport 名称。
 	Transport string
+	// Kind 是稳定的事件类型。
+	Kind TransportEventKind
+	// Value 是事件的增量或计数值。
+	Value int64
+	// ConnectionID 标识事件关联的连接。
+	ConnectionID string
+	// StreamID 标识事件关联的 stream。
+	StreamID string
 	// Error 是可选的 transport 错误。
 	Error error
 }

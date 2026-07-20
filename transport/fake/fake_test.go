@@ -367,6 +367,28 @@ func TestFakeStreamCloseCausesSendAndRecvErrors(t *testing.T) {
 	}
 }
 
+func TestFakeStreamClosePreservesFramesAlreadySentToPeer(t *testing.T) {
+	clientStream, serverStream := newStreamPair(t)
+	response := &protocol.Frame{
+		Type:     protocol.FrameResponse,
+		StreamID: serverStream.ID(),
+	}
+	if err := serverStream.SendFrame(context.Background(), response); err != nil {
+		t.Fatalf("SendFrame() error = %v", err)
+	}
+	if err := serverStream.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	frame, err := clientStream.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("peer RecvFrame() error = %v", err)
+	}
+	if frame.Type != protocol.FrameResponse {
+		t.Fatalf("frame.Type = %v, want %v", frame.Type, protocol.FrameResponse)
+	}
+}
+
 func TestFakeConnCloseStopsOpenAndAcceptStream(t *testing.T) {
 	tr := New()
 	endpoint := transport.Endpoint{Transport: "fake", Address: "svc"}
@@ -477,8 +499,14 @@ func TestFakeStreamCloseUnregistersFromConnections(t *testing.T) {
 	if got := activeStreams(clientConn); got != 0 {
 		t.Fatalf("client active streams = %d, want 0", got)
 	}
+	if got := activeStreams(serverConn); got != 1 {
+		t.Fatalf("server active streams = %d, want 1", got)
+	}
+	if err := serverStream.Close(context.Background()); err != nil {
+		t.Fatalf("server Close() error = %v", err)
+	}
 	if got := activeStreams(serverConn); got != 0 {
-		t.Fatalf("server active streams = %d, want 0", got)
+		t.Fatalf("server active streams after local Close = %d, want 0", got)
 	}
 }
 

@@ -197,6 +197,32 @@ endpoint := transport.Endpoint{
 }
 ```
 
+ZeroMQ 默认在连接静默 10 秒后发送心跳，30 秒未收到任何有效 frame 时回收连接；正常
+request/response 本身会刷新活跃时间，不会额外发送心跳包。`Close` 使用 Close/CloseAck
+握手，默认最多等待 5 秒。优雅停机顺序是先调用 `Drain`，等待已有 stream 完成，再调用
+`Close`。
+
+生产环境应同时限制 libzmq HWM 和 Go owner 队列：
+
+```go
+tr := zmq.New(zmq.Options{
+	SndHWM:               2000,
+	RcvHWM:               2000,
+	SendQueueSize:         1024,
+	SendQueueBytes:        64 << 20,
+	ControlQueueSize:      128,
+	RecvQueueSize:         1024,
+	HeartbeatInterval:     10 * time.Second,
+	PeerTimeout:           30 * time.Second,
+	CloseHandshakeTimeout: 5 * time.Second,
+	RouterMandatory:       true,
+	Immediate:             true,
+})
+```
+
+连接控制帧属于当前 v1 wire 协议，不兼容改造前的 ZeroMQ frame 编码。完整行为与限制见
+[ZeroMQ Transport v1 实现说明](./docs/zeromq-review.md)。
+
 ## 扩展点
 
 - `codec.Codec`：自定义序列化协议。

@@ -99,14 +99,18 @@ func (s *Server) serveConn(ctx context.Context, conn transport.Conn) {
 		}
 		if !s.tryAcquireStream() {
 			_ = stream.Reset(ctx, &status.Status{Code: status.ResourceExhausted, Message: "too many concurrent streams"})
+			_ = stream.Close(context.Background())
 			continue
 		}
 		// 每个 transport stream 独立执行业务 handler，避免单个长流阻塞同连接其他 stream。
-		go func() {
-			defer s.releaseStream()
-			s.serveUnaryStream(ctx, stream)
-		}()
+		go s.serveAcceptedStream(ctx, stream)
 	}
+}
+
+func (s *Server) serveAcceptedStream(ctx context.Context, stream transport.TransportStream) {
+	defer s.releaseStream()
+	defer func() { _ = stream.Close(context.Background()) }()
+	s.serveUnaryStream(ctx, stream)
 }
 
 func (s *Server) tryAcquireStream() bool {

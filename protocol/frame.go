@@ -28,7 +28,22 @@ const (
 	FramePing
 	// FrameGoAway 表示连接即将关闭或不再接受新 stream。
 	FrameGoAway
+	// FramePong 表示连接探测响应帧。
+	FramePong
+	// FrameClose 表示连接关闭请求帧。
+	FrameClose
+	// FrameCloseAck 表示连接关闭确认帧。
+	FrameCloseAck
 )
+
+func (t FrameType) isConnectionControl() bool {
+	switch t {
+	case FramePing, FramePong, FrameGoAway, FrameClose, FrameCloseAck:
+		return true
+	default:
+		return false
+	}
+}
 
 // Direction 表示 frame 的逻辑传输方向。
 type Direction uint8
@@ -48,7 +63,7 @@ type Frame struct {
 	Type FrameType
 	// StreamID 标识 frame 所属 stream。
 	StreamID string
-	// Seq 预留为 stream 内顺序号。
+	// Seq 用作 stream 内顺序号，也用于关联连接控制请求和响应。
 	Seq uint64
 	// Direction 标识 frame 的逻辑传输方向。
 	Direction Direction
@@ -67,13 +82,22 @@ func (f Frame) Validate() error {
 	if f.Type == 0 {
 		return errors.New("protocol: frame type is required")
 	}
-	if f.Type > FrameGoAway {
+	if f.Type > FrameCloseAck {
 		return fmt.Errorf("protocol: unknown frame type %d", f.Type)
 	}
 	if f.Direction > DirectionServerToClient {
 		return fmt.Errorf("protocol: invalid direction %d", f.Direction)
 	}
-	if f.Type != FramePing && f.Type != FrameGoAway && f.StreamID == "" {
+	if f.Type.isConnectionControl() {
+		if f.Seq == 0 {
+			return errors.New("protocol: connection control frame seq is required")
+		}
+		if f.StreamID != "" || len(f.Metadata) != 0 || len(f.Payload) != 0 || f.Window != 0 || f.Status != nil || f.Direction != DirectionNone {
+			return errors.New("protocol: connection control frame contains stream fields")
+		}
+		return nil
+	}
+	if f.StreamID == "" {
 		return errors.New("protocol: stream id is required")
 	}
 	if f.Type == FrameWindowUpdate && f.Window <= 0 {

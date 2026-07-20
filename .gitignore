@@ -1,2 +1,3 @@
 .codegraph/
-docs/
+docs/*
+!docs/zeromq-review.md

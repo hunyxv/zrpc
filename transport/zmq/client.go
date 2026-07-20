@@ -3,6 +3,7 @@ package zmq
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/hunyxv/zrpc/protocol"
 	"github.com/hunyxv/zrpc/transport"
@@ -47,6 +48,9 @@ func (t *Transport) Listen(endpoint transport.Endpoint, opts transport.ListenOpt
 }
 
 func newClientConn(ctx context.Context, endpoint transport.Endpoint, opts Options) (transport.Conn, error) {
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -75,20 +79,36 @@ func newClientConn(ctx context.Context, endpoint transport.Endpoint, opts Option
 	}
 	// local endpoint 使用 identity 作为地址，便于日志/追踪中定位本地逻辑连接。
 	// remote endpoint 保留调用方传入的 ZeroMQ 地址，例如 tcp://127.0.0.1:5555。
-	conn := newConn(id, transport.Endpoint{Transport: "zmq", Address: id}, endpoint, nil, false, opts.RecvQueueSize)
+	conn := newConn(id, transport.Endpoint{Transport: "zmq", Address: id}, endpoint, nil, false, opts)
 	// owner 拿到 socket 的独占访问权。收到服务端 frame 后直接路由到该 conn；
 	// 客户端 DEALER 不需要 route，所以回调中的 route 参数会被忽略。
-	owner := newOwner(zctx, socket, false, opts, func(route []byte, frame *protocol.Frame) []routeFrameAction {
+	owner, err := newOwner(zctx, socket, false, opts, func(route []byte, frame *protocol.Frame) []routeFrameAction {
+		conn.observeInbound(time.Now())
 		return conn.routeFrame(frame)
+	}, func(now time.Time) []routeFrameAction {
+		return conn.heartbeatActions(now)
+	}, func(err error) {
+		conn.finishClose(err)
 	})
+	if err != nil {
+		_ = socket.Close()
+		_ = zctx.Term()
+		return nil, err
+	}
 	conn.owner = owner
 
 	handshakeCtx, cancel := context.WithTimeout(ctx, opts.HandshakeTimeout)
 	defer cancel()
 	// 发送一次轻量 ping 触发 DEALER 与 ROUTER 建立可见通信路径。
 	// 服务端收到 ping 后只创建/确认 route，不把它暴露成业务 stream。
-	if err := owner.send(handshakeCtx, nil, &protocol.Frame{Type: protocol.FramePing}); err != nil {
-		_ = conn.Close(context.Background())
+	if err := owner.send(handshakeCtx, nil, &protocol.Frame{Type: protocol.FramePing, Seq: 1}); err != nil {
+		owner.requestFailure(err)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), opts.HandshakeTimeout)
+		defer cleanupCancel()
+		select {
+		case <-owner.done:
+		case <-cleanupCtx.Done():
+		}
 		return nil, err
 	}
 	return conn, nil

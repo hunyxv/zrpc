@@ -68,12 +68,10 @@ func TestZMQTransportFrameRoundTrip(t *testing.T) {
 	}
 }
 
-func TestZMQRecvQueueSizeDefaultsForNonPositiveValues(t *testing.T) {
-	for _, size := range []int{0, -1} {
-		opts := defaultOptions(Options{RecvQueueSize: size})
-		if opts.RecvQueueSize != 1024 {
-			t.Fatalf("RecvQueueSize for %d = %d, want 1024", size, opts.RecvQueueSize)
-		}
+func TestZMQRecvQueueSizeDefaultsForZeroValue(t *testing.T) {
+	opts := defaultOptions(Options{})
+	if opts.RecvQueueSize != 1024 {
+		t.Fatalf("RecvQueueSize = %d, want 1024", opts.RecvQueueSize)
 	}
 }
 
@@ -262,6 +260,243 @@ func TestZMQCloseStopsOpenAndAccept(t *testing.T) {
 	}
 }
 
+func TestZMQIdleConnectionStaysAliveWithHeartbeat(t *testing.T) {
+	endpoint := testEndpoint(t)
+	tr := New(Options{
+		HeartbeatInterval:     20 * time.Millisecond,
+		PeerTimeout:           80 * time.Millisecond,
+		CloseHandshakeTimeout: 100 * time.Millisecond,
+		Linger:                10 * time.Millisecond,
+		RouterMandatory:       true,
+		Immediate:             true,
+	})
+	listenerValue, err := tr.Listen(endpoint, transport.ListenOptions{})
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	l := listenerValue.(*listener)
+	defer func() { _ = l.Close(context.Background()) }()
+	serverConnCh := make(chan transport.Conn, 1)
+	go func() {
+		conn, err := l.Accept(context.Background())
+		if err == nil {
+			serverConnCh <- conn
+		}
+	}()
+	clientValue, err := tr.Dial(context.Background(), endpoint, transport.DialOptions{})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	clientConn := clientValue.(*conn)
+	defer func() { _ = clientConn.Close(context.Background()) }()
+	_ = waitForServerConn(t, serverConnCh)
+
+	time.Sleep(140 * time.Millisecond)
+	l.mu.Lock()
+	got := len(l.conns)
+	l.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("routes after idle heartbeat = %d, want 1", got)
+	}
+}
+
+func TestZMQPeerTimeoutRemovesDisconnectedRoute(t *testing.T) {
+	endpoint := testEndpoint(t)
+	tr := New(Options{
+		HeartbeatInterval:     20 * time.Millisecond,
+		PeerTimeout:           80 * time.Millisecond,
+		CloseHandshakeTimeout: 100 * time.Millisecond,
+		Linger:                0,
+		RouterMandatory:       true,
+		Immediate:             true,
+	})
+	listenerValue, err := tr.Listen(endpoint, transport.ListenOptions{})
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	l := listenerValue.(*listener)
+	defer func() { _ = l.Close(context.Background()) }()
+	serverConnCh := make(chan transport.Conn, 1)
+	go func() {
+		conn, err := l.Accept(context.Background())
+		if err == nil {
+			serverConnCh <- conn
+		}
+	}()
+	clientValue, err := tr.Dial(context.Background(), endpoint, transport.DialOptions{})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	clientConn := clientValue.(*conn)
+	_ = waitForServerConn(t, serverConnCh)
+	if err := clientConn.owner.close(context.Background()); err != nil {
+		t.Fatalf("owner.close() error = %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		l.mu.Lock()
+		remaining := len(l.conns)
+		l.mu.Unlock()
+		if remaining == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("server route was not removed after peer timeout")
+}
+
+func TestZMQRepeatedStreamsReturnMapsToZero(t *testing.T) {
+	endpoint := testEndpoint(t)
+	tr := New(Options{Linger: 10 * time.Millisecond, CloseHandshakeTimeout: 200 * time.Millisecond, RouterMandatory: true, Immediate: true})
+	listenerValue, err := tr.Listen(endpoint, transport.ListenOptions{})
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	l := listenerValue.(*listener)
+	defer func() { _ = l.Close(context.Background()) }()
+	serverConnCh := make(chan transport.Conn, 1)
+	go func() {
+		conn, err := l.Accept(context.Background())
+		if err == nil {
+			serverConnCh <- conn
+		}
+	}()
+	clientValue, err := tr.Dial(context.Background(), endpoint, transport.DialOptions{})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	clientConn := clientValue.(*conn)
+	defer func() { _ = clientConn.Close(context.Background()) }()
+	serverConn := waitForServerConn(t, serverConnCh).(*conn)
+
+	for i := 0; i < 200; i++ {
+		clientStream, err := clientConn.OpenStream(context.Background(), "hello.Repeated", nil)
+		if err != nil {
+			t.Fatalf("OpenStream(%d) error = %v", i, err)
+		}
+		serverStreamValue, err := serverConn.AcceptStream(context.Background())
+		if err != nil {
+			t.Fatalf("AcceptStream(%d) error = %v", i, err)
+		}
+		serverStream := serverStreamValue.(*stream)
+		if _, err := serverStream.RecvFrame(context.Background()); err != nil {
+			t.Fatalf("server RecvFrame(%d) error = %v", i, err)
+		}
+		if err := serverStream.SendFrame(context.Background(), &protocol.Frame{
+			Type:      protocol.FrameResponse,
+			StreamID:  serverStream.ID(),
+			Direction: protocol.DirectionServerToClient,
+			Status:    &status.Status{Code: status.OK},
+		}); err != nil {
+			t.Fatalf("server SendFrame(%d) error = %v", i, err)
+		}
+		if err := serverStream.Close(context.Background()); err != nil {
+			t.Fatalf("server Close(%d) error = %v", i, err)
+		}
+		if _, err := clientStream.RecvFrame(context.Background()); err != nil {
+			t.Fatalf("client RecvFrame(%d) error = %v", i, err)
+		}
+		if err := clientStream.Close(context.Background()); err != nil {
+			t.Fatalf("client Close(%d) error = %v", i, err)
+		}
+	}
+	waitForConnStreamCount(t, clientConn, 0)
+	waitForConnStreamCount(t, serverConn, 0)
+}
+
+func TestZMQDrainResetsNewInboundRequest(t *testing.T) {
+	endpoint := testEndpoint(t)
+	tr := New(Options{Linger: 10 * time.Millisecond, CloseHandshakeTimeout: 200 * time.Millisecond, RouterMandatory: true, Immediate: true})
+	listenerValue, err := tr.Listen(endpoint, transport.ListenOptions{})
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	l := listenerValue.(*listener)
+	defer func() { _ = l.Close(context.Background()) }()
+	serverConnCh := make(chan transport.Conn, 1)
+	go func() {
+		conn, err := l.Accept(context.Background())
+		if err == nil {
+			serverConnCh <- conn
+		}
+	}()
+	clientValue, err := tr.Dial(context.Background(), endpoint, transport.DialOptions{})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	clientConn := clientValue.(*conn)
+	defer func() { _ = clientConn.Close(context.Background()) }()
+	serverConn := waitForServerConn(t, serverConnCh).(*conn)
+	if err := serverConn.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+
+	const streamID = "after-drain"
+	clientStream := newStream(streamID, clientConn)
+	clientConn.mu.Lock()
+	clientConn.streams[streamID] = clientStream
+	clientConn.mu.Unlock()
+	if err := clientConn.owner.send(context.Background(), nil, &protocol.Frame{
+		Type:      protocol.FrameRequest,
+		StreamID:  streamID,
+		Direction: protocol.DirectionClientToServer,
+	}); err != nil {
+		t.Fatalf("send request after peer Drain: %v", err)
+	}
+	frame, err := recvFrameWithTimeout(t, clientStream)
+	if err != nil {
+		t.Fatalf("RecvFrame() error = %v", err)
+	}
+	if frame.Type != protocol.FrameReset || frame.Status == nil || frame.Status.Code != status.Unavailable {
+		t.Fatalf("frame = %#v, want Unavailable reset", frame)
+	}
+	_ = clientStream.Close(context.Background())
+}
+
+func TestZMQClientChurnReturnsRouteMapToZero(t *testing.T) {
+	endpoint := testEndpoint(t)
+	tr := New(Options{Linger: 10 * time.Millisecond, CloseHandshakeTimeout: 200 * time.Millisecond, RouterMandatory: true, Immediate: true})
+	listenerValue, err := tr.Listen(endpoint, transport.ListenOptions{})
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	l := listenerValue.(*listener)
+	defer func() { _ = l.Close(context.Background()) }()
+
+	for i := 0; i < 50; i++ {
+		serverConnCh := make(chan transport.Conn, 1)
+		go func() {
+			conn, err := l.Accept(context.Background())
+			if err == nil {
+				serverConnCh <- conn
+			}
+		}()
+		clientValue, err := tr.Dial(context.Background(), endpoint, transport.DialOptions{})
+		if err != nil {
+			t.Fatalf("Dial(%d) error = %v", i, err)
+		}
+		_ = waitForServerConn(t, serverConnCh)
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err = clientValue.Close(closeCtx)
+		cancel()
+		if err != nil {
+			t.Fatalf("Close(%d) error = %v", i, err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		l.mu.Lock()
+		remaining := len(l.conns)
+		l.mu.Unlock()
+		if remaining == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("listener routes did not return to zero after client churn")
+}
+
 func TestZMQTransportSupportsUnaryClientServer(t *testing.T) {
 	endpoint := testEndpoint(t)
 	tr := New(Options{Linger: 100 * time.Millisecond, RouterMandatory: true, Immediate: true})
@@ -435,4 +670,22 @@ func recvFrameWithTimeout(t *testing.T, stream transport.TransportStream) (*prot
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	return stream.RecvFrame(ctx)
+}
+
+func waitForConnStreamCount(t *testing.T, c *conn, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		got := len(c.streams)
+		c.mu.Unlock()
+		if got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	c.mu.Lock()
+	got := len(c.streams)
+	c.mu.Unlock()
+	t.Fatalf("active streams = %d, want %d", got, want)
 }
